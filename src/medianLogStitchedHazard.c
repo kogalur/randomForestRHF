@@ -76,18 +76,18 @@ static double median_inplace(double *arr, int n) {
   }
 }
 SEXP medianLogStitchedHazard(SEXP idSEXP,
-                            SEXP startSEXP,
-                            SEXP stopSEXP,
-                            SEXP timeSEXP,
-                            SEXP inbagSEXP,
-                            SEXP leafCountSEXP,
-                            SEXP timbrCaseCtSEXP,
-                            SEXP timbrCaseIdSEXP,
-                            SEXP tombrCaseCtSEXP,
-                            SEXP tombrCaseIdSEXP,
-                            SEXP tHazardSEXP,
-                            SEXP targetSEXP,
-                            SEXP epsSEXP) {
+                             SEXP startSEXP,
+                             SEXP stopSEXP,
+                             SEXP timeSEXP,
+                             SEXP inbagSEXP,
+                             SEXP leafCountSEXP,
+                             SEXP timbrCaseCtSEXP,
+                             SEXP timbrCaseIdSEXP,
+                             SEXP tombrCaseCtSEXP,
+                             SEXP tombrCaseIdSEXP,
+                             SEXP tHazardSEXP,
+                             SEXP targetSEXP,
+                             SEXP epsSEXP) {
   if (!isInteger(idSEXP))   error("id must be integer.");
   if (!isReal(startSEXP))   error("start must be numeric (double).");
   if (!isReal(stopSEXP))    error("stop must be numeric (double).");

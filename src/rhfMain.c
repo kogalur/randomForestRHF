@@ -35,14 +35,17 @@
 #include "stackOutput.h"
 #include "splitUtil.h"
 #include "processEnsemble.h"
+#include "processEnsembleCOE.h"
 #include "stackOutputQQ.h"
 #include "stackOutputQQTest.h"
 #include "stackSubjectInfo.h"
 char rhfMain(char mode, int seedValue) {
   uint b, bb;
   uint seedValueLC;
+  char coeOOBRiskPrecomputed;
   char result;
   result = TRUE;
+  coeOOBRiskPrecomputed = FALSE;
   seedValueLC    = 0; 
   if (seedValue >= 0) {
     RF_nativeError("\nRF-SRC:  *** ERROR *** ");
@@ -519,13 +522,99 @@ char rhfMain(char mode, int seedValue) {
           for (bb = 1; bb <= RF_getTreeCount; bb++) {
             acquireTree(mode, RF_getTreeIndex[bb]);
           }
+          if (SG_optLocal &
+              (SG_OPT_SWTCH_FOUR |
+               SG_OPT_SWTCH_FIVE |
+               SG_OPT_SWTCH_SIX)) {
+            uint coeSubjCount;
+            uint supportedSubjectCount;
+            uint optimizedTrimIndex;
+            coeSubjCount = (mode == RF_PRED) ? SG_fsubjCount : RF_subjCount;
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(RF_numThreads)
+#endif
+            for (bb = 1; bb <= coeSubjCount; bb++) {
+              populateCOEEnsembleSupport(mode, bb);
+            }
+            if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+                (mode != RF_PRED) &&
+                (RF_opt & OPT_OENS) &&
+                (SG_coeTrimSize > 1)) {
+              if ((SG_coeTrimRiskOOB_ == NULL) || (SG_oobRisk_ == NULL)) {
+                RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+                RF_nativeError("\nRF-SRC:  Missing native storage for batched coe.trim OOB selection.");
+                RF_nativeExit();
+              }
+              optimizedTrimIndex =
+                selectCOETrimByOOBRiskAllTrim(SG_coeTrimRiskOOB_,
+                                              &supportedSubjectCount,
+                                              SG_oobRisk_);
+              if (SG_coeTrim[optimizedTrimIndex] >=
+                  SG_COE_TRIM_MEDIAN_FALLBACK_THRESHOLD) {
+                SG_coeTrimIndex = SG_COE_TRIM_INDEX_MEDIAN_FALLBACK;
+                coeOOBRiskPrecomputed = FALSE;
+              }
+              else {
+                SG_coeTrimIndex = optimizedTrimIndex;
+                coeOOBRiskPrecomputed = TRUE;
+              }
+            }
+            else if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+                     (mode != RF_PRED) &&
+                     (RF_opt & OPT_OENS) &&
+                     (SG_coeTrimSize == 1)) {
+              SG_coeTrimIndex = 1;
+            }
+            if ((SG_coeTrimIndex > SG_coeTrimSize) ||
+                ((SG_coeTrimIndex == SG_COE_TRIM_INDEX_MEDIAN_FALLBACK) &&
+                 ((SG_optLocal & SG_OPT_SWTCH_FIVE) == 0))) {
+              RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+              RF_nativeError("\nRF-SRC:  Invalid selected coe.trim index:  %10d",
+                             SG_coeTrimIndex);
+              RF_nativeExit();
+            }
+            if (SG_coeTrimIndex_ != NULL) {
+              SG_coeTrimIndex_[1] = SG_coeTrimIndex;
+            }
+            getCOEEnsembleAggregateAllSubjects(mode,
+                                               coeSubjCount,
+                                               SG_coeTrimIndex);
+          }
           if ((RF_opt & OPT_PERF) ||
               (RF_opt & OPT_OENS) ||
               (RF_opt & OPT_IENS) ||
               (RF_opt & OPT_FENS)) {
-            normalizeEnsembleEstimates(mode);
-            calculateRiskCore(mode, (SG_optLocal & SG_OPT_WMODE) >> 16);
-            calculateRiskRaw(mode);
+            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+              normalizeEnsembleEstimates(mode);
+            }
+            populateEnsembleIds(mode);
+            calculateRiskCore(mode,
+                              (SG_optLocal & SG_OPT_WMODE) >> 16,
+                              SG_coeTrimIndex,
+                              coeOOBRiskPrecomputed);
+            if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+                (mode != RF_PRED) &&
+                (RF_opt & OPT_OENS) &&
+                (SG_coeTrimSize == 1)) {
+              double scalarRisk;
+              scalarRisk = getCOEOOBRiskObjective(NULL);
+              if (SG_coeTrimRiskOOB_ != NULL) {
+                SG_coeTrimRiskOOB_[1] = scalarRisk;
+              }
+            }
+            if ((SG_optLocal &
+                 (SG_OPT_SWTCH_FOUR |
+                  SG_OPT_SWTCH_FIVE |
+                  SG_OPT_SWTCH_SIX)) == 0) {
+              calculateRiskRaw(mode);
+            }
+            finalizePathDomainOutputs(mode);
+          }
+          RF_totalNodeCount = 0;
+          RF_totalTermCount = 0;
+          for (b = 1; b <= RF_ntree; b++) {
+            RF_totalNodeCount += RF_nodeCount[b];
+            RF_totalTermCount += RF_tLeafCount[b];
           }
           if ((mode == RF_GROW) || (mode == RF_REST)) {
             if (RF_opt & OPT_TREE) {    
@@ -572,6 +661,22 @@ char rhfMain(char mode, int seedValue) {
             writeTNQuantitativeObjectsOutput(mode,
                                              SG_termNelsonAalen_ptr,
                                              SG_termHazard_ptr);
+            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+              stackTNNodeTimeObjects(mode,
+                                     &SG_nodeU_,
+                                     &SG_nodeV_,
+                                     &SG_nodeCOE_,
+                                     &SG_nodeCumulativeCOE_,
+                                     &SG_nodeU_ptr,
+                                     &SG_nodeV_ptr,
+                                     &SG_nodeCOE_ptr,
+                                     &SG_nodeCumulativeCOE_ptr);
+              writeTNNodeTimeObjects(mode,
+                                     SG_nodeU_ptr,
+                                     SG_nodeV_ptr,
+                                     SG_nodeCOE_ptr,
+                                     SG_nodeCumulativeCOE_ptr);
+            }
             unstackTNQualitativeObjectsForestPtr(mode,
                                                  SG_rmbrTNodeID_ptr,
                                                  SG_imbrTNodeID_ptr,
@@ -594,8 +699,23 @@ char rhfMain(char mode, int seedValue) {
             writeTNQualitativeObjectsOutputTest(mode,
                                                 SG_ombrTNodeCT_ptr,
                                                 SG_ombrTNodeID_ptr);
-            unstackTNQualitativeObjectsForestPtrTest(mode,
-                                                     SG_ombrTNodeID_ptr);
+            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+              stackTNNodeTimeObjects(mode,
+                                     &SG_nodeU_,
+                                     &SG_nodeV_,
+                                     &SG_nodeCOE_,
+                                     &SG_nodeCumulativeCOE_,
+                                     &SG_nodeU_ptr,
+                                     &SG_nodeV_ptr,
+                                     &SG_nodeCOE_ptr,
+                                     &SG_nodeCumulativeCOE_ptr);
+              writeTNNodeTimeObjects(mode,
+                                     SG_nodeU_ptr,
+                                     SG_nodeV_ptr,
+                                     SG_nodeCOE_ptr,
+                                     SG_nodeCumulativeCOE_ptr);
+            }
+            unstackTNQualitativeObjectsForestPtrTest(mode, SG_ombrTNodeID_ptr);
             unstackForestObjectsAuxOnlySGT();
           }
           freeAugmentationObjCommonGeneric(SG_augmObjCommon);

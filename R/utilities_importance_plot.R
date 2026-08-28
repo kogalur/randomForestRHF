@@ -1,10 +1,150 @@
 ########################################################################
 ## plot helpers
 ########################################################################
+.rhf_validate_named_list <- function(x, arg = "argument") {
+  if (!is.list(x)) {
+    stop("'", arg, "' must be a list.")
+  }
+  if (!length(x)) {
+    return(invisible(TRUE))
+  }
+  nms <- names(x)
+  if (is.null(nms) || any(!nzchar(nms))) {
+    stop("All elements of '", arg, "' must be named.")
+  }
+  if (anyDuplicated(nms)) {
+    dup <- unique(nms[duplicated(nms)])
+    stop("Duplicated argument name(s) in '", arg, "': ",
+         paste(dup, collapse = ", "), ".")
+  }
+  invisible(TRUE)
+}
+.rhf_graphics_call <- function(fun,
+                               fixed,
+                               extra = list(),
+                               protected = names(fixed),
+                               arg = "...") {
+  .rhf_validate_named_list(extra, arg)
+  conflict <- intersect(names(extra), protected)
+  if (length(conflict)) {
+    stop("'", arg, "' cannot override argument(s) controlled by the RHF ",
+         "plot helper: ", paste(conflict, collapse = ", "), ".")
+  }
+  ## Arguments not marked as protected may replace a default. This is useful
+  ## for optional legend placement and formatting while keeping data-driven
+  ## geometry (coordinates, colors, sizes) under the helper's control.
+  replace <- intersect(names(extra), names(fixed))
+  if (length(replace)) {
+    fixed[replace] <- NULL
+  }
+  do.call(fun, c(fixed, extra))
+}
+.rhf_importance_plot_data <- function(x) {
+  if (!inherits(x, "importance.rhf")) {
+    stop("This function only works for objects of class 'importance.rhf'.")
+  }
+  mat <- x$importance.matrix
+  if (!is.matrix(mat) || length(dim(mat)) != 2L ||
+      nrow(mat) < 1L || ncol(mat) < 1L) {
+    stop("No importance values available to plot.")
+  }
+  if (!is.numeric(mat)) {
+    stop("'x$importance.matrix' must be a numeric matrix.")
+  }
+  var.codes <- rownames(mat)
+  if (is.null(var.codes)) {
+    fallback <- x$xvar.names
+    if (length(fallback) == nrow(mat)) {
+      var.codes <- as.character(fallback)
+      rownames(mat) <- var.codes
+    }
+    else {
+      stop("'x$importance.matrix' must have variable row names.")
+    }
+  }
+  if (anyNA(var.codes) || any(!nzchar(var.codes))) {
+    stop("Variable row names must be non-missing and non-empty.")
+  }
+  if (anyDuplicated(var.codes)) {
+    stop("Variable row names in 'x$importance.matrix' must be unique.")
+  }
+  window.info <- x$window.info
+  if (is.null(window.info) || is.null(window.info$time)) {
+    stop("'x$window.info$time' is required for importance plotting.")
+  }
+  time.values <- window.info$time
+  if (length(time.values) != ncol(mat)) {
+    stop("The number of values in 'x$window.info$time' (",
+         length(time.values), ") must equal the number of importance-matrix ",
+         "columns (", ncol(mat), ").")
+  }
+  if (!is.numeric(time.values)) {
+    stop("'x$window.info$time' must be numeric.")
+  }
+  time.codes <- colnames(mat)
+  if (is.null(time.codes)) {
+    time.codes <- as.character(time.values)
+  }
+  else {
+    time.codes <- as.character(time.codes)
+    empty <- is.na(time.codes) | !nzchar(time.codes)
+    time.codes[empty] <- as.character(time.values[empty])
+  }
+  colnames(mat) <- time.codes
+  list(mat = mat,
+       var.codes = rownames(mat),
+       time.codes = time.codes,
+       time.values = time.values)
+}
+.rhf_resolve_time_labels <- function(time.codes,
+                                     time.values,
+                                     time.labels = NULL) {
+  if (is.null(time.labels)) {
+    out <- .rhf_format_time_labels(time.values)
+  }
+  else if (!is.data.frame(time.labels) && is.null(names(time.labels))) {
+    if (length(time.labels) != length(time.codes)) {
+      stop("An unnamed 'time.labels' vector must have one label per time window.")
+    }
+    out <- as.character(time.labels)
+  }
+  else {
+    out <- .rhf_label_lookup(time.codes, time.labels, infer_prefix = FALSE)
+  }
+  if (length(out) != length(time.codes)) {
+    stop("The resolved time labels must have one entry per matrix column.")
+  }
+  as.character(out)
+}
+.rhf_expand_plot_range <- function(x,
+                                   fallback = c(0, 1),
+                                   relative.pad = 0.04,
+                                   absolute.pad = 1) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(fallback)
+  }
+  rng <- range(x)
+  if (rng[1L] != rng[2L]) {
+    return(rng)
+  }
+  pad <- max(abs(rng[1L]) * relative.pad, absolute.pad)
+  c(rng[1L] - pad, rng[2L] + pad)
+}
+.rhf_thin_breaks <- function(x, max.breaks = 5L) {
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  if (length(x) <= max.breaks) {
+    return(x)
+  }
+  idx <- unique(round(seq(1, length(x), length.out = max.breaks)))
+  x[idx]
+}
 .rhf_select_dotmatrix_variables <- function(mat,
                                             vars = NULL,
-                                            top_n_union = 15L,
-                                            sort_abs = TRUE) {
+                                            top.n.union = 15L,
+                                            sort.abs = TRUE) {
   if (!is.null(vars)) {
     vars <- intersect(as.character(vars), rownames(mat))
     if (!length(vars)) {
@@ -12,43 +152,44 @@
     }
     return(mat[vars, , drop = FALSE])
   }
-  top_n_union <- as.integer(top_n_union)[1L]
-  if (!is.finite(top_n_union) || top_n_union < 1L) {
-    stop("top_n_union must be a positive integer.")
+  top.n.union <- as.integer(top.n.union)[1L]
+  if (!is.finite(top.n.union) || top.n.union < 1L) {
+    stop("'top.n.union' must be a positive integer.")
   }
   top.vars <- unique(unlist(lapply(seq_len(ncol(mat)), function(j) {
     v <- mat[, j]
-    ord <- if (isTRUE(sort_abs)) {
-      order(abs(v), decreasing = TRUE, na.last = TRUE)
+    score <- if (isTRUE(sort.abs)) abs(v) else v
+    keep <- is.finite(score)
+    if (!any(keep)) {
+      return(character(0))
     }
-    else {
-      order(v, decreasing = TRUE, na.last = TRUE)
-    }
-    rownames(mat)[head(ord, min(top_n_union, length(ord)))]
-  })))
+    idx <- which(keep)
+    ord <- idx[order(score[idx], decreasing = TRUE)]
+    rownames(mat)[head(ord, min(top.n.union, length(ord)))]
+  }), use.names = FALSE))
   if (!length(top.vars)) {
-    stop("No variables available for the dot-matrix plot.")
+    stop("No finite variables available for the matrix plot.")
   }
   mat[top.vars, , drop = FALSE]
 }
 .rhf_order_dotmatrix_variables <- function(mat,
                                            variable.labels = NULL,
-                                           sort_by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
-                                           sort_abs = TRUE) {
-  sort_by <- match.arg(sort_by)
-  if (sort_by == "none") {
+                                           sort.by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
+                                           sort.abs = TRUE) {
+  sort.by <- match.arg(sort.by)
+  if (sort.by == "none" || nrow(mat) < 2L) {
     return(rownames(mat))
   }
-  if (sort_by %in% c("q90", "sum", "max", "mean", "median")) {
+  if (sort.by %in% c("q90", "sum", "max", "mean", "median")) {
     score <- .rhf_row_summary(mat,
-                              rank.by = sort_by,
-                              abs = sort_abs)
-    return(names(sort(score, decreasing = TRUE)))
+                              rank.by = sort.by,
+                              abs = sort.abs)
+    return(rownames(mat)[order(score, decreasing = TRUE, na.last = TRUE)])
   }
-  if (sort_by == "alphabetical") {
+  if (sort.by == "alphabetical") {
     lab <- .rhf_label_lookup(rownames(mat), variable.labels, infer_prefix = TRUE)
     lab <- .rhf_make_unique_labels(lab, rownames(mat))
-    return(rownames(mat)[order(lab)])
+    return(rownames(mat)[order(lab, na.last = TRUE)])
   }
   ## cluster
   mat.z <- t(scale(t(mat)))
@@ -61,6 +202,7 @@
                                     to = c(0.5, 3.0)) {
   x <- as.numeric(x)
   from <- as.numeric(from)
+  to <- as.numeric(to)
   out <- rep(0, length(x))
   ok <- is.finite(x)
   if (!any(ok)) {
@@ -69,11 +211,15 @@
   if (length(from) != 2L || any(!is.finite(from))) {
     return(out)
   }
+  if (length(to) != 2L || any(!is.finite(to))) {
+    stop("'to' must be a finite numeric vector of length 2.")
+  }
   if (from[1L] == from[2L]) {
     out[ok] <- mean(to)
     return(out)
   }
-  out[ok] <- to[1L] + (x[ok] - from[1L]) / (from[2L] - from[1L]) * (to[2L] - to[1L])
+  out[ok] <- to[1L] + (x[ok] - from[1L]) /
+    (from[2L] - from[1L]) * (to[2L] - to[1L])
   out
 }
 .rhf_pretty_breaks <- function(x,
@@ -117,7 +263,8 @@
   br <- unique(br[is.finite(br)])
   if (!length(br)) {
     probs <- seq(0, 1, length.out = n)
-    br <- as.numeric(stats::quantile(x, probs = probs, na.rm = TRUE, names = FALSE))
+    br <- as.numeric(stats::quantile(x, probs = probs,
+                                     na.rm = TRUE, names = FALSE))
     if (positive.only) {
       br <- br[br > 0]
     }
@@ -127,7 +274,56 @@
 }
 .rhf_format_legend_values <- function(x,
                                       digits = 3L) {
-  format(signif(as.numeric(x), digits = digits), trim = TRUE, scientific = FALSE)
+  format(signif(as.numeric(x), digits = digits),
+         trim = TRUE, scientific = FALSE)
+}
+.rhf_draw_matrix_guides <- function(x.at = numeric(0),
+                                    y.at = numeric(0),
+                                    xlim,
+                                    ylim,
+                                    col = "grey92",
+                                    lty = 3,
+                                    lwd = graphics::par("lwd")) {
+  x.at <- as.numeric(x.at)
+  y.at <- as.numeric(y.at)
+  xlim <- as.numeric(xlim)
+  ylim <- as.numeric(ylim)
+  if (length(xlim) != 2L || any(!is.finite(xlim)) ||
+      length(ylim) != 2L || any(!is.finite(ylim))) {
+    stop("'xlim' and 'ylim' must be finite numeric vectors of length 2.")
+  }
+  x.at <- x.at[is.finite(x.at) &
+                 x.at >= min(xlim) & x.at <= max(xlim)]
+  y.at <- y.at[is.finite(y.at) &
+                 y.at >= min(ylim) & y.at <= max(ylim)]
+  if (!length(x.at) && !length(y.at)) {
+    return(invisible(TRUE))
+  }
+  ## The matrix plot keeps xpd = NA so large symbols and rotated labels are
+  ## not clipped. Grid and reference lines should nevertheless remain inside
+  ## the data panel rather than extending into the variable-label margin.
+  old.xpd <- graphics::par("xpd")
+  on.exit(graphics::par(xpd = old.xpd), add = TRUE)
+  graphics::par(xpd = FALSE)
+  if (length(y.at)) {
+    graphics::segments(x0 = xlim[1L],
+                       y0 = y.at,
+                       x1 = xlim[2L],
+                       y1 = y.at,
+                       col = col,
+                       lty = lty,
+                       lwd = lwd)
+  }
+  if (length(x.at)) {
+    graphics::segments(x0 = x.at,
+                       y0 = ylim[1L],
+                       x1 = x.at,
+                       y1 = ylim[2L],
+                       col = col,
+                       lty = lty,
+                       lwd = lwd)
+  }
+  invisible(TRUE)
 }
 .rhf_draw_dotmatrix_xlabels <- function(at,
                                         labels,
@@ -166,32 +362,51 @@
                                        var.cex = 0.9,
                                        axis.cex = 0.9,
                                        time.label.srt = 45,
-                                       legend = TRUE) {
+                                       legend = TRUE,
+                                       left.min = 4.0,
+                                       left.max = 30,
+                                       left.pad = 1.7) {
   csi <- graphics::par("csi")
   if (!is.finite(csi) || csi <= 0) {
     csi <- 0.2
   }
   left.in <- if (length(var.labels)) {
-    max(graphics::strwidth(var.labels, units = "inches", cex = var.cex), na.rm = TRUE)
-  } else {
+    max(graphics::strwidth(var.labels, units = "inches", cex = var.cex),
+        na.rm = TRUE)
+  }
+  else {
     0
+  }
+  if (!is.finite(left.in)) {
+    left.in <- 0
   }
   lab.w.in <- if (length(x.labels)) {
-    max(graphics::strwidth(x.labels, units = "inches", cex = axis.cex), na.rm = TRUE)
-  } else {
+    max(graphics::strwidth(x.labels, units = "inches", cex = axis.cex),
+        na.rm = TRUE)
+  }
+  else {
     0
   }
+  if (!is.finite(lab.w.in)) {
+    lab.w.in <- 0
+  }
   lab.h.in <- if (length(x.labels)) {
-    max(graphics::strheight(x.labels, units = "inches", cex = axis.cex), na.rm = TRUE)
-  } else {
+    max(graphics::strheight(x.labels, units = "inches", cex = axis.cex),
+        na.rm = TRUE)
+  }
+  else {
     0
+  }
+  if (!is.finite(lab.h.in)) {
+    lab.h.in <- 0
   }
   theta <- abs(as.numeric(time.label.srt)[1L]) * pi / 180
   rot.ext.in <- lab.w.in * sin(theta) + lab.h.in * cos(theta)
-  ## Give the variable labels some extra room beyond their measured width so
-  ## long names do not crowd the plotting region.
-  left.mar <- 1.25 + left.in / csi + 1.15
-  left.mar <- min(30, max(10.0, left.mar))
+  ## The label width determines the left margin. A small conventional floor is
+  ## retained for short names and y-axis labels, while long informatics labels
+  ## still receive their measured physical width plus padding.
+  left.mar <- left.in / csi + left.pad
+  left.mar <- min(left.max, max(left.min, left.mar))
   ## Keep enough room for rotated time labels so they are not clipped, while
   ## controlling label proximity to the axis separately at draw time.
   bottom.mar <- 0.45 + rot.ext.in / csi + 0.65
@@ -200,124 +415,207 @@
   right.mar <- if (isTRUE(legend)) 0.5 else 0.4
   c(bottom.mar, left.mar, top.mar, right.mar)
 }
+.rhf_resolve_matrix_legend_title <- function(value,
+                                             default,
+                                             arg) {
+  if (is.null(value)) {
+    return(NULL)
+  }
+  if (is.logical(value)) {
+    if (length(value) != 1L || is.na(value)) {
+      stop("'", arg,
+           "' must be TRUE, FALSE, NULL, or a single character string.")
+    }
+    return(if (isTRUE(value)) default else NULL)
+  }
+  if (is.character(value)) {
+    if (length(value) != 1L || is.na(value)) {
+      stop("'", arg,
+           "' must be TRUE, FALSE, NULL, or a single character string.")
+    }
+    return(if (nzchar(value)) value else NULL)
+  }
+  stop("'", arg,
+       "' must be TRUE, FALSE, NULL, or a single character string.")
+}
+.rhf_resolve_matrix_legend_args <- function(legend.args = list(),
+                                           title,
+                                           color.title = NULL,
+                                           cex = 0.85,
+                                           title.cex = 0.9) {
+  .rhf_validate_named_list(legend.args, "legend.args")
+  supported <- c("title", "color.title", "cex", "title.cex")
+  unknown <- setdiff(names(legend.args), supported)
+  if (length(unknown)) {
+    stop("Unsupported name(s) in 'legend.args': ",
+         paste(unknown, collapse = ", "),
+         ". Supported names are: ",
+         paste(supported, collapse = ", "), ".")
+  }
+  title.out <- title
+  color.title.out <- color.title
+  titles.were.identical <- identical(title, color.title)
+  if ("title" %in% names(legend.args)) {
+    title.out <- .rhf_resolve_matrix_legend_title(
+      value = legend.args[["title"]],
+      default = title,
+      arg = "legend.args$title"
+    )
+    ## A suppressed general title suppresses both matrix-legend headings.
+    ## A later, explicit color.title entry can selectively restore the color
+    ## heading. If the two automatic titles represented the same quantity,
+    ## a custom general title is propagated to both so it is drawn only once.
+    if (is.null(title.out)) {
+      color.title.out <- NULL
+    }
+    else if (titles.were.identical &&
+             !("color.title" %in% names(legend.args))) {
+      color.title.out <- title.out
+    }
+  }
+  if ("color.title" %in% names(legend.args)) {
+    color.title.out <- .rhf_resolve_matrix_legend_title(
+      value = legend.args[["color.title"]],
+      default = color.title,
+      arg = "legend.args$color.title"
+    )
+  }
+  get.cex <- function(name, default) {
+    if (!(name %in% names(legend.args))) {
+      return(default)
+    }
+    value <- legend.args[[name]]
+    if (!is.numeric(value) || length(value) != 1L ||
+        is.na(value) || !is.finite(value) || value <= 0) {
+      stop("'legend.args$", name,
+           "' must be a single positive finite numeric value.")
+    }
+    as.numeric(value)
+  }
+  list(
+    title = title.out,
+    color.title = color.title.out,
+    cex = get.cex("cex", cex),
+    title.cex = get.cex("title.cex", title.cex)
+  )
+}
+.rhf_has_matrix_legend_title <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x) && nzchar(x)
+}
 .rhf_draw_dotmatrix_legend <- function(size.breaks,
                                        size.range,
                                        size.title,
                                        cex.range,
                                        alpha,
-                                       color_by,
+                                       color.by,
                                        color.range = NULL,
                                        color.title = NULL,
-                                       point_color = "steelblue4",
-                                       value_colors = c("grey85", "steelblue4"),
-                                       sign_colors = c("firebrick3", "grey90", "steelblue4"),
+                                       point.color = "steelblue4",
+                                       value.colors = c("grey85", "steelblue4"),
+                                       sign.colors = c("firebrick3", "grey90", "steelblue4"),
                                        cex.text = 0.85,
                                        cex.title = 0.9) {
   graphics::plot.new()
-  graphics::plot.window(xlim = c(0, 0.70), ylim = c(0, 1), xaxs = "i", yaxs = "i")
-  has.color <- color_by %in% c("value", "sign") &&
+  graphics::plot.window(xlim = c(0, 0.72), ylim = c(0, 1),
+                        xaxs = "i", yaxs = "i")
+  has.color <- color.by %in% c("value", "sign") &&
     length(color.range) == 2L && all(is.finite(color.range))
   size.breaks <- as.numeric(size.breaks)
-  size.breaks <- sort(unique(size.breaks[is.finite(size.breaks)]), decreasing = TRUE)
-  ## Compact legend geometry with titles placed close to the legend content.
+  size.breaks <- sort(unique(size.breaks[is.finite(size.breaks)]),
+                      decreasing = TRUE)
+  size.breaks <- .rhf_thin_breaks(size.breaks, max.breaks = 4L)
   x.title <- 0.06
   x.dot <- 0.22
   x.size.lab <- 0.40
   if (length(size.breaks)) {
-    size.y.top <- if (has.color) 0.79 else 0.74
-    size.y.bottom <- if (has.color) 0.64 else 0.28
-    size.y.seq <- if (length(size.breaks) == 1L) {
-      mean(c(size.y.top, size.y.bottom))
-    } else {
-      seq(size.y.top, size.y.bottom, length.out = length(size.breaks))
+    panel.top <- if (has.color) 0.88 else 0.82
+    panel.bottom <- if (has.color) 0.60 else 0.20
+    size.y <- if (length(size.breaks) == 1L) {
+      mean(c(panel.top, panel.bottom))
     }
-    ## adjust top panel
-    size.y.seq <-  1.1 * size.y.seq
-    size.y.top <- 1.1 * (size.y.top + 0.040)
-    graphics::text(x.title,
-                   size.y.top,
-                   labels = size.title,
-                   adj = c(0, 0.5),
-                   font = 2,
-                   cex = cex.title)
+    else {
+      seq(panel.top, panel.bottom, length.out = length(size.breaks))
+    }
+    if (.rhf_has_matrix_legend_title(size.title)) {
+      graphics::text(x.title,
+                     min(0.97, panel.top + 0.08),
+                     labels = size.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
     cex.val <- .rhf_rescale_from_range(size.breaks,
                                        from = size.range,
                                        to = cex.range)
     graphics::points(rep(x.dot, length(size.breaks)),
-                     size.y.seq,
+                     size.y,
                      pch = 16,
                      cex = cex.val,
-                     col = grDevices::adjustcolor(point_color, alpha.f = alpha))
+                     col = grDevices::adjustcolor(point.color,
+                                                  alpha.f = alpha))
     graphics::text(rep(x.size.lab, length(size.breaks)),
-                   size.y.seq,
+                   size.y,
                    labels = .rhf_format_legend_values(size.breaks),
                    adj = c(0, 0.5),
                    cex = cex.text)
   }
   else {
+    if (.rhf_has_matrix_legend_title(size.title)) {
+      graphics::text(x.title,
+                     0.80,
+                     labels = size.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
     graphics::text(x.title,
-                   0.72,
-                   labels = size.title,
-                   adj = c(0, 0.5),
-                   font = 2,
-                   cex = cex.title)
-    graphics::text(x.title,
-                   0.64,
+                   if (.rhf_has_matrix_legend_title(size.title)) 0.70 else 0.78,
                    labels = "No positive values",
                    adj = c(0, 0.5),
                    cex = cex.text)
   }
   if (has.color) {
-    if (is.null(color.title) || !nzchar(color.title)) {
-      color.title <- "Importance"
-    }
     x0 <- 0.18
     x1 <- 0.34
-    y0 <- 0.16 + .275
-    y1 <- 0.39 + .275
-    #graphics::text(x.title,
-    #               y1 + 0.035,
-    #               labels = color.title,
-    #               adj = c(0, 0.5),
-    #               font = 2,
-    #               cex = cex.title)
+    y0 <- 0.12
+    y1 <- 0.43
+    if (.rhf_has_matrix_legend_title(color.title) &&
+        !identical(color.title, size.title)) {
+      graphics::text(x.title,
+                     y1 + 0.08,
+                     labels = color.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
     n.bar <- 64L
     y.seq <- seq(y0, y1, length.out = n.bar + 1L)
-    pal <- if (color_by == "value") {
-      grDevices::colorRampPalette(value_colors)(n.bar)
-    } else {
-      grDevices::colorRampPalette(sign_colors)(n.bar)
+    vals <- seq(color.range[1L], color.range[2L], length.out = n.bar)
+    pal <- if (color.by == "value") {
+      .rhf_map_palette(vals, value.colors, symmetric = FALSE)
     }
-    for (i in seq_len(n.bar)) {
-      graphics::rect(x0, y.seq[i], x1, y.seq[i + 1L],
-                     col = pal[i], border = pal[i])
+    else {
+      .rhf_map_palette(vals, sign.colors, symmetric = TRUE)
     }
+    pal <- grDevices::adjustcolor(pal, alpha.f = alpha)
+    graphics::rect(rep(x0, n.bar), y.seq[-length(y.seq)],
+                   rep(x1, n.bar), y.seq[-1L],
+                   col = pal, border = pal)
     graphics::rect(x0, y0, x1, y1, border = "grey40")
-    br <- if (color_by == "sign") {
-      .rhf_pretty_breaks(color.range, n = 10L, symmetric = TRUE)
-    } else {
-      .rhf_pretty_breaks(color.range, n = 10L,
+    br <- if (color.by == "sign") {
+      .rhf_pretty_breaks(color.range, n = 5L, symmetric = TRUE)
+    }
+    else {
+      .rhf_pretty_breaks(color.range, n = 5L,
                          positive.only = FALSE,
                          symmetric = FALSE)
     }
     if (!length(br)) {
       br <- color.range
     }
-    if (color_by == "sign") {
-      lim <- max(abs(color.range), na.rm = TRUE)
-      ypos <- if (is.finite(lim) && lim > 0) {
-        y0 + (br + lim) / (2 * lim) * (y1 - y0)
-      } else {
-        rep(mean(c(y0, y1)), length(br))
-      }
-    } else {
-      rng <- range(color.range, na.rm = TRUE)
-      ypos <- if (is.finite(rng[1L]) && is.finite(rng[2L]) && rng[1L] != rng[2L]) {
-        y0 + (br - rng[1L]) / diff(rng) * (y1 - y0)
-      } else {
-        rep(mean(c(y0, y1)), length(br))
-      }
-    }
+    ypos <- .rhf_rescale_from_range(br,
+                                    from = color.range,
+                                    to = c(y0, y1))
     graphics::segments(x1, ypos, x1 + 0.035, ypos, col = "grey35")
     graphics::text(x1 + 0.055,
                    ypos,
@@ -335,95 +633,155 @@
                                        height.title,
                                        bar.max.height,
                                        alpha,
-                                       color_by,
+                                       color.by,
                                        color.range = NULL,
                                        color.title = NULL,
-                                       bar_color = "steelblue4",
-                                       value_colors = c("grey85", "steelblue4"),
-                                       sign_colors = c("firebrick3", "grey90", "steelblue4"),
+                                       bar.color = "steelblue4",
+                                       value.colors = c("grey85", "steelblue4"),
+                                       sign.colors = c("firebrick3", "grey90", "steelblue4"),
                                        cex.text = 0.85,
                                        cex.title = 0.9) {
   graphics::plot.new()
-  graphics::plot.window(xlim = c(0, 0.70), ylim = c(0, 1), xaxs = "i", yaxs = "i")
-  has.color <- color_by %in% c("value", "sign") &&
+  graphics::plot.window(xlim = c(0, 0.72), ylim = c(0, 1),
+                        xaxs = "i", yaxs = "i")
+  has.color <- color.by %in% c("value", "sign") &&
     length(color.range) == 2L && all(is.finite(color.range))
+  has.height.title <- .rhf_has_matrix_legend_title(height.title)
+  has.separate.color.title <- has.color &&
+    .rhf_has_matrix_legend_title(color.title) &&
+    !identical(color.title, height.title)
   height.breaks <- as.numeric(height.breaks)
-  height.breaks <- sort(unique(height.breaks[is.finite(height.breaks)]), decreasing = TRUE)
+  height.breaks <- sort(unique(height.breaks[is.finite(height.breaks)]),
+                        decreasing = TRUE)
+  height.breaks <- .rhf_thin_breaks(height.breaks, max.breaks = 4L)
   x.title <- 0.06
   x.bar <- 0.22
   x.height.lab <- 0.40
   if (length(height.breaks)) {
-    height.y.top <- if (has.color) 0.82 else 0.76
-    height.y.bottom <- if (has.color) 0.62 else 0.28
-    height.y.seq <- if (length(height.breaks) == 1L) {
-      mean(c(height.y.top, height.y.bottom))
-    } else {
-      seq(height.y.top, height.y.bottom, length.out = length(height.breaks))
+    height.labels <- .rhf_format_legend_values(height.breaks)
+    label.height <- suppressWarnings(max(
+      graphics::strheight(height.labels,
+                          units = "user",
+                          cex = cex.text),
+      na.rm = TRUE
+    ))
+    if (!is.finite(label.height)) {
+      label.height <- 0
     }
-    legend.bar.max <- if (has.color) 0.075 else 0.10
-    graphics::text(x.title,
-                   min(0.96, height.y.top + legend.bar.max + 0.06),
-                   labels = height.title,
-                   adj = c(0, 0.5),
-                   font = 2,
-                   cex = cex.title)
+    ## Pack the reference bars into a compact block. The spacing is based on
+    ## the larger of the text height and a small fixed cell size, while the
+    ## maximum bar remains smaller than that spacing. This preserves a visible
+    ## gap between bars without spreading a short legend over the full panel.
+    if (has.color) {
+      item.spacing <- max(0.078, 1.35 * label.height)
+      available <- 0.27
+      if (length(height.breaks) > 1L) {
+        item.spacing <- min(item.spacing,
+                            available / (length(height.breaks) - 1L))
+      }
+      block.center <- 0.755
+      legend.bar.max <- min(0.055, 0.65 * item.spacing)
+    }
+    else {
+      item.spacing <- max(0.115, 1.35 * label.height)
+      available <- 0.50
+      if (length(height.breaks) > 1L) {
+        item.spacing <- min(item.spacing,
+                            available / (length(height.breaks) - 1L))
+      }
+      block.center <- 0.50
+      legend.bar.max <- min(0.10, 0.72 * item.spacing)
+    }
+    center.y <- block.center +
+      ((length(height.breaks) + 1) / 2 - seq_along(height.breaks)) *
+      item.spacing
+    baseline.y <- center.y - legend.bar.max / 2
+    if (has.height.title) {
+      title.y <- min(0.97,
+                     max(center.y) + legend.bar.max / 2 + 0.055)
+      graphics::text(x.title,
+                     title.y,
+                     labels = height.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
+    height.max <- max(height.range, na.rm = TRUE)
+    scale.range <- if (is.finite(height.max) && height.max > 0) {
+      c(0, height.max)
+    }
+    else {
+      c(0, 1)
+    }
     h.val <- .rhf_rescale_from_range(height.breaks,
-                                     from = height.range,
+                                     from = scale.range,
                                      to = c(0, legend.bar.max))
     graphics::segments(x.bar - 0.065,
-                       height.y.seq,
+                       baseline.y,
                        x.bar + 0.065,
-                       height.y.seq,
+                       baseline.y,
                        col = "grey60")
     graphics::rect(x.bar - 0.040,
-                   height.y.seq,
+                   baseline.y,
                    x.bar + 0.040,
-                   height.y.seq + h.val,
-                   col = grDevices::adjustcolor(bar_color, alpha.f = alpha),
+                   baseline.y + h.val,
+                   col = grDevices::adjustcolor(bar.color, alpha.f = alpha),
                    border = NA)
     graphics::text(rep(x.height.lab, length(height.breaks)),
-                   height.y.seq,
-                   labels = .rhf_format_legend_values(height.breaks),
+                   center.y,
+                   labels = height.labels,
                    adj = c(0, 0.5),
                    cex = cex.text)
   }
   else {
+    if (has.height.title) {
+      graphics::text(x.title,
+                     0.80,
+                     labels = height.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
     graphics::text(x.title,
-                   0.72,
-                   labels = paste0(height.title, "\n(no finite positive values)"),
+                   if (has.height.title) 0.70 else 0.78,
+                   labels = "No positive values",
                    adj = c(0, 0.5),
-                   font = 2,
-                   cex = cex.title)
+                   cex = cex.text)
   }
   if (has.color) {
-    color.y.top <- 0.48
-    color.y.bottom <- 0.12
+    ## When both encodings describe the same quantity, no second title is
+    ## needed, so the color key can move upward and use the otherwise empty
+    ## space between the two legend sections.
+    color.y.top <- if (has.separate.color.title) 0.43 else 0.52
+    color.y.bottom <- 0.10
     n.grad <- 80L
     yy <- seq(color.y.bottom, color.y.top, length.out = n.grad + 1L)
     vals <- seq(color.range[1L], color.range[2L], length.out = n.grad)
-    cols <- if (color_by == "sign") {
-      .rhf_map_palette(vals, sign_colors, symmetric = TRUE)
+    cols <- if (color.by == "sign") {
+      .rhf_map_palette(vals, sign.colors, symmetric = TRUE)
     }
     else {
-      .rhf_map_palette(vals, value_colors, symmetric = FALSE)
+      .rhf_map_palette(vals, value.colors, symmetric = FALSE)
     }
     cols <- grDevices::adjustcolor(cols, alpha.f = alpha)
-    graphics::text(x.title,
-                   color.y.top + 0.08,
-                   labels = color.title,
-                   adj = c(0, 0.5),
-                   font = 2,
-                   cex = cex.title)
-    graphics::rect(x.title,
+    if (has.separate.color.title) {
+      graphics::text(x.title,
+                     color.y.top + 0.08,
+                     labels = color.title,
+                     adj = c(0, 0.5),
+                     font = 2,
+                     cex = cex.title)
+    }
+    graphics::rect(rep(x.title, n.grad),
                    yy[-length(yy)],
-                   x.title + 0.10,
+                   rep(x.title + 0.10, n.grad),
                    yy[-1L],
                    col = cols,
                    border = cols)
     br <- .rhf_pretty_breaks(color.range,
                              n = 5L,
                              positive.only = FALSE,
-                             symmetric = color_by == "sign")
+                             symmetric = color.by == "sign")
     br <- br[br >= color.range[1L] & br <= color.range[2L]]
     br <- unique(br[is.finite(br)])
     if (length(br)) {
@@ -446,7 +804,19 @@
 }
 .rhf_map_palette <- function(x, colors, symmetric = FALSE) {
   x <- as.numeric(x)
-  pal <- grDevices::colorRampPalette(colors)(64L)
+  colors <- as.character(colors)
+  if (length(colors) < 1L || anyNA(colors) || any(!nzchar(colors))) {
+    stop("A color palette must contain at least one non-missing color.")
+  }
+  ## Handle a one-color palette explicitly. This avoids relying on palette
+  ## interpolation for a constant scale and guarantees that value.colors =
+  ## "steelblue4" (and the analogous sign.colors case) is valid.
+  pal <- if (length(colors) == 1L) {
+    rep(colors, 64L)
+  }
+  else {
+    grDevices::colorRampPalette(colors)(64L)
+  }
   idx <- rep(1L, length(x))
   ok <- is.finite(x)
   if (!any(ok)) {
@@ -456,15 +826,22 @@
     lim <- max(abs(x[ok]), na.rm = TRUE)
     if (!is.finite(lim) || lim <= 0) {
       idx[ok] <- ceiling(length(pal) / 2)
-    } else {
-      idx[ok] <- 1L + floor((x[ok] + lim) / (2 * lim) * (length(pal) - 1L))
     }
-  } else {
+    else {
+      idx[ok] <- 1L + floor((x[ok] + lim) / (2 * lim) *
+                              (length(pal) - 1L))
+    }
+  }
+  else {
     rng <- range(x[ok], na.rm = TRUE)
-    if (!is.finite(rng[1L]) || !is.finite(rng[2L]) || rng[1L] == rng[2L]) {
+    if (!is.finite(rng[1L]) || !is.finite(rng[2L]) ||
+        rng[1L] == rng[2L]) {
       idx[ok] <- length(pal)
-    } else {
-      idx[ok] <- 1L + floor((x[ok] - rng[1L]) / (rng[2L] - rng[1L]) * (length(pal) - 1L))
+    }
+    else {
+      idx[ok] <- 1L + floor((x[ok] - rng[1L]) /
+                              (rng[2L] - rng[1L]) *
+                              (length(pal) - 1L))
     }
   }
   idx <- pmax(1L, pmin(length(pal), idx))
@@ -562,13 +939,16 @@
     }
     nms <- names(map)
     if (all(c("variable", "label") %in% nms)) {
-      map <- stats::setNames(as.character(map$label), as.character(map$variable))
+      map <- stats::setNames(as.character(map$label),
+                             as.character(map$variable))
     }
     else if (all(c("outcome", "label") %in% nms)) {
-      map <- stats::setNames(as.character(map$label), as.character(map$outcome))
+      map <- stats::setNames(as.character(map$label),
+                             as.character(map$outcome))
     }
     else {
-      map <- stats::setNames(as.character(map[[2L]]), as.character(map[[1L]]))
+      map <- stats::setNames(as.character(map[[2L]]),
+                             as.character(map[[1L]]))
     }
   }
   if (is.null(names(map))) {
@@ -581,7 +961,8 @@
   out <- as.character(map[idx])
   miss <- is.na(out) | out == ""
   if (any(miss) && isTRUE(infer_prefix)) {
-    out2 <- vapply(x[miss], .rhf_infer_prefix_label, character(1), map = map)
+    out2 <- vapply(x[miss], .rhf_infer_prefix_label,
+                   character(1), map = map)
     fill.ok <- !is.na(out2) & nzchar(out2)
     out[which(miss)[fill.ok]] <- out2[fill.ok]
     miss <- is.na(out) | out == ""

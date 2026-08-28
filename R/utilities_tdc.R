@@ -1,5 +1,215 @@
 ####################################################################
 ##
+## default tree size
+##
+####################################################################
+default.treesize <- function(ndead,
+                             min.events.per.leaf = 10L,
+                             target.events.per.leaf = 50L,
+                             min.treesize = 15L) {
+  target <- max(min.treesize,
+                ndead / target.events.per.leaf)
+  support.limit <- ndead / min.events.per.leaf
+  max(1L, as.integer(floor(min(target, support.limit))))
+}
+####################################################################
+##
+## Event-process validation helpers
+##
+####################################################################
+.rhf.match.event.process <- function(event.process = c("auto", "terminal", "recurrent")) {
+  if (is.null(event.process)) {
+    event.process <- "auto"
+  }
+  match.arg(event.process, c("auto", "terminal", "recurrent"))
+}
+.rhf.coerce.event.code <- function(event,
+                                   binary = TRUE,
+                                   what = "event") {
+  event.na <- is.na(event)
+  if (is.factor(event)) {
+    event <- as.character(event)
+  }
+  if (is.logical(event)) {
+    event <- as.integer(event)
+  }
+  event.num <- suppressWarnings(as.numeric(event))
+  bad.coercion <- is.na(event.num) & !event.na
+  if (any(bad.coercion)) {
+    stop("The ", what, " variable could not be converted to numeric values.",
+         call. = FALSE)
+  }
+  if (any(is.na(event.num))) {
+    stop("The ", what, " variable cannot contain missing values.",
+         call. = FALSE)
+  }
+  if (any(!is.finite(event.num))) {
+    stop("The ", what, " variable must contain finite values.",
+         call. = FALSE)
+  }
+  if (isTRUE(binary)) {
+    if (any(!(event.num %in% c(0, 1)))) {
+      stop("The ", what,
+           " variable must be coded 0/1 for terminal or recurrent RHF data.",
+           call. = FALSE)
+    }
+  } else {
+    if (any(event.num < 0 | event.num != floor(event.num))) {
+      stop("The ", what,
+           " variable must be coded as a non-negative integer.",
+           call. = FALSE)
+    }
+  }
+  as.integer(event.num)
+}
+.rhf.validate.counting.intervals <- function(id,
+                                             start,
+                                             stop,
+                                             eps = 1e-8,
+                                             data.name = "data") {
+  if (!(length(id) == length(start) && length(start) == length(stop))) {
+    stop("Subject, start, and stop vectors have incompatible lengths in ",
+         data.name, ".", call. = FALSE)
+  }
+  if (!length(id)) {
+    stop("No counting-process rows remain in ", data.name, ".",
+         call. = FALSE)
+  }
+  if (anyNA(id)) {
+    stop("Subject identifiers cannot be missing in ", data.name, ".",
+         call. = FALSE)
+  }
+  if (any(!is.finite(start) | !is.finite(stop))) {
+    stop("Start and stop times must be finite in ", data.name, ".",
+         call. = FALSE)
+  }
+  if (any(stop <= start)) {
+    stop("Every counting-process row must satisfy start < stop in ",
+         data.name, ".", call. = FALSE)
+  }
+  id.key <- if (is.factor(id)) as.integer(id) else id
+  subject.blocks <- rle(id.key)$values
+  if (anyDuplicated(subject.blocks)) {
+    stop("Rows for each subject must form one contiguous block in ",
+         data.name, ".", call. = FALSE)
+  }
+  n <- length(id.key)
+  if (n > 1L) {
+    same.subject <- id.key[-1L] == id.key[-n]
+    out.of.order <- same.subject &
+      (start[-1L] < start[-n] - eps)
+    if (any(out.of.order)) {
+      stop("Within each subject, counting-process rows must be ordered by start time in ",
+           data.name, ".", call. = FALSE)
+    }
+    overlap <- same.subject &
+      (start[-1L] < stop[-n] - eps)
+    if (any(overlap)) {
+      stop("Overlapping counting-process intervals were found within a subject in ",
+           data.name, ". Intervals may be contiguous or separated by gaps, but they may not overlap.",
+           call. = FALSE)
+    }
+  }
+  invisible(TRUE)
+}
+.rhf.event.process.info <- function(id,
+                                    event,
+                                    start = NULL,
+                                    stop = NULL,
+                                    event.process = c("auto", "terminal", "recurrent"),
+                                    binary = TRUE,
+                                    what = "event",
+                                    presorted = FALSE) {
+  requested <- .rhf.match.event.process(event.process)
+  event <- .rhf.coerce.event.code(event, binary = binary, what = what)
+  if (length(id) != length(event)) {
+    stop("Subject and event vectors have incompatible lengths.",
+         call. = FALSE)
+  }
+  if (!length(id)) {
+    stop("No subjects are available for event-process validation.",
+         call. = FALSE)
+  }
+  if (anyNA(id)) {
+    stop("Subject identifiers cannot be missing when validating the event process.",
+         call. = FALSE)
+  }
+  if (!is.null(start) || !is.null(stop)) {
+    if (is.null(start) || is.null(stop) ||
+        length(start) != length(event) || length(stop) != length(event)) {
+      stop("Start and stop vectors must both be supplied and have one value per event row.",
+           call. = FALSE)
+    }
+    if (any(!is.finite(start) | !is.finite(stop))) {
+      stop("Start and stop times must be finite when validating the event process.",
+           call. = FALSE)
+    }
+  }
+  id.key <- if (is.factor(id)) as.integer(id) else id
+  if (isTRUE(presorted)) {
+    id.ord <- id.key
+    subject.id.ord <- id
+    event.ord <- event
+  } else {
+    group <- match(id.key, id.key)
+    if (!is.null(start)) {
+      ord <- order(group, start, stop, seq_along(event), method = "radix")
+    } else {
+      ord <- order(group, seq_along(event), method = "radix")
+    }
+    id.ord <- id.key[ord]
+    subject.id.ord <- id[ord]
+    event.ord <- event[ord]
+  }
+  rr <- rle(id.ord)
+  ends <- cumsum(rr$lengths)
+  starts <- ends - rr$lengths + 1L
+  subject.order <- subject.id.ord[starts]
+  event.count <- integer(length(rr$lengths))
+  premature.event <- logical(length(rr$lengths))
+  event.position <- which(event.ord != 0L)
+  if (length(event.position)) {
+    event.group <- findInterval(event.position - 1L, ends) + 1L
+    event.count <- tabulate(event.group, nbins = length(rr$lengths))
+    premature.group <- unique(event.group[event.position < ends[event.group]])
+    if (length(premature.group)) {
+      premature.event[premature.group] <- TRUE
+    }
+  }
+  names(event.count) <- as.character(subject.order)
+  recurrent.pattern <- any(event.count > 1L) || any(premature.event)
+  inferred <- if (recurrent.pattern) "recurrent" else "terminal"
+  resolved <- if (requested == "auto") inferred else requested
+  q <- stats::quantile(event.count,
+                       probs = c(0, 0.25, 0.50, 0.75, 1),
+                       names = FALSE,
+                       type = 1)
+  list(
+    event = event,
+    requested = requested,
+    inferred = inferred,
+    event.process = resolved,
+    terminal.valid = !recurrent.pattern,
+    n.subject = length(event.count),
+    n.event = sum(event.count),
+    n.event.subject = sum(event.count > 0L),
+    mean.events.per.subject = mean(event.count),
+    max.events.per.subject = max(event.count),
+    events.per.subject.summary = c(
+      min = q[1L],
+      q1 = q[2L],
+      median = q[3L],
+      mean = mean(event.count),
+      q3 = q[4L],
+      max = q[5L]
+    ),
+    event.count.by.subject = event.count,
+    subject.order = subject.order,
+    premature.event.subject = subject.order[premature.event]
+  )
+}
+####################################################################
+##
 ## TDC Helper Functions
 ##
 ####################################################################
@@ -36,7 +246,21 @@ cleanup.counting <- function(dta,
                              yvar.names,
                              subj.names,
                              sorted = FALSE,
-                             eps = 1e-6) {
+                             eps = 1e-6,
+                             event.process = c("auto", "terminal", "recurrent")) {
+  event.process <- .rhf.match.event.process(event.process)
+  stored.event.process <- attr(dta, "event.process", exact = TRUE)
+  if (event.process == "auto" && !is.null(stored.event.process)) {
+    event.process <- .rhf.match.event.process(stored.event.process)
+  }
+  if (length(yvar.names) < 3L) {
+    stop("Counting-process RHF data must include start, stop, and event variables.",
+         call. = FALSE)
+  }
+  if (length(subj.names) != 1L) {
+    stop("Counting-process RHF data must contain exactly one subject identifier.",
+         call. = FALSE)
+  }
   ## work out candidate x variables
   if (is.null(xvar.names)) {
     xvar.candidate <- setdiff(colnames(dta), c(subj.names, yvar.names))
@@ -53,6 +277,7 @@ cleanup.counting <- function(dta,
   ## coerce start/stop once, early
   start.nm <- yvar.names[1L]
   stop.nm  <- yvar.names[2L]
+  event.nm <- yvar.names[3L]
   for (nm in c(start.nm, stop.nm)) {
     v <- dta[[nm]]
     if (is.factor(v)) {
@@ -106,6 +331,12 @@ cleanup.counting <- function(dta,
       stop("After removing missing values there are no x variables left.")
     }
   }
+  ## RHF terminal and recurrent event processes both use a binary row increment.
+  dta[[event.nm]] <- .rhf.coerce.event.code(
+    dta[[event.nm]],
+    binary = TRUE,
+    what = event.nm
+  )
   ## one-pass stable sort by subject encounter-order, then start time.
   ## This preserves the original grouping semantics without the O(n * n_subjects)
   ## cost of lapply(unique(id), which(id == i), ...).
@@ -116,6 +347,45 @@ cleanup.counting <- function(dta,
       dta <- dta[ord, , drop = FALSE]
     }
   }
+  ## Remove rows with invalid start--stop intervals before time
+  ## transformation.  RHF permits gaps in a subject's supplied path, so an
+  ## isolated invalid interval can be removed.  If the row carries an event,
+  ## the warning explicitly records that the event is also removed.
+  startv <- dta[[start.nm]]
+  stopv  <- dta[[stop.nm]]
+  eventv <- dta[[event.nm]]
+  bad.raw <- !is.finite(startv) | !is.finite(stopv) | (stopv <= startv)
+  bad.raw[is.na(bad.raw)] <- TRUE
+  if (any(bad.raw)) {
+    n.bad <- sum(bad.raw)
+    n.bad.event <- sum(eventv[bad.raw] == 1L)
+    n.bad.nonevent <- n.bad - n.bad.event
+    warning(sprintf(
+      paste0(
+        "Removing %d row(s) with non-finite or non-positive start--stop length ",
+        "(%d event row(s), %d non-event row(s)).%s"
+      ),
+      n.bad,
+      n.bad.event,
+      n.bad.nonevent,
+      if (n.bad.event > 0L) {
+        " Removed event rows will not contribute to the event process."
+      } else {
+        ""
+      }
+    ), call. = FALSE)
+    dta <- dta[!bad.raw, , drop = FALSE]
+  }
+  if (nrow(dta) == 0L) {
+    stop("After processing there are no valid counting-process intervals left.")
+  }
+  .rhf.validate.counting.intervals(
+    id = dta[[subj.names]],
+    start = dta[[start.nm]],
+    stop = dta[[stop.nm]],
+    eps = eps,
+    data.name = "training data"
+  )
   ## transform time to [0,1] using modified logit with tau = training max.time
   max.time <- max(dta[[stop.nm]], na.rm = TRUE)
   if (!is.finite(max.time) || max.time <= 0) {
@@ -126,11 +396,31 @@ cleanup.counting <- function(dta,
                    max.time = as.double(max.time))
   startv <- .forward.time(dta[[start.nm]], time.map)
   stopv  <- .forward.time(dta[[stop.nm]],  time.map)
-  ## remove non-finite time values and any data points where stop<=start within epsilon tolerance
-  bad <- (!is.finite(startv) | !is.finite(stopv) | (stopv <= startv + eps))
-  bad[is.na(bad)] <- TRUE
-  if (any(bad)) {
-    keep <- !bad
+  eventv <- dta[[event.nm]]
+  ## A strictly increasing transformation should preserve start < stop.
+  ## Do not impose an epsilon-based minimum interval width on the transformed
+  ## scale: every finite interval with stop > start remains valid.
+  bad.map <- !is.finite(startv) | !is.finite(stopv) | (stopv <= startv)
+  bad.map[is.na(bad.map)] <- TRUE
+  if (any(bad.map)) {
+    n.bad <- sum(bad.map)
+    n.bad.event <- sum(eventv[bad.map] == 1L)
+    n.bad.nonevent <- n.bad - n.bad.event
+    warning(sprintf(
+      paste0(
+        "Removing %d row(s) with non-finite or non-positive length after ",
+        "time transformation (%d event row(s), %d non-event row(s)).%s"
+      ),
+      n.bad,
+      n.bad.event,
+      n.bad.nonevent,
+      if (n.bad.event > 0L) {
+        " Removed event rows will not contribute to the event process."
+      } else {
+        ""
+      }
+    ), call. = FALSE)
+    keep <- !bad.map
     dta   <- dta[keep, , drop = FALSE]
     startv <- startv[keep]
     stopv  <- stopv[keep]
@@ -140,11 +430,34 @@ cleanup.counting <- function(dta,
   }
   dta[[start.nm]] <- startv
   dta[[stop.nm]]  <- stopv
+  event.info <- .rhf.event.process.info(
+    id = dta[[subj.names]],
+    event = dta[[event.nm]],
+    start = dta[[start.nm]],
+    stop = dta[[stop.nm]],
+    event.process = event.process,
+    binary = TRUE,
+    what = event.nm,
+    presorted = TRUE
+  )
+  if (event.info$requested == "terminal" && !event.info$terminal.valid) {
+    stop("Terminal-event RHF data may contain at most one event per subject, ",
+         "and an event row must be the final row for that subject. ",
+         "Use event.process = 'recurrent' for recurrent-event data.",
+         call. = FALSE)
+  }
   ## store helpful attributes
   attr(dta, "max.time")              <- max.time
   attr(dta, "time.map")              <- time.map
   attr(dta, "xvar.names")            <- xvar.names
   attr(dta, "sorted.by.subj.start")  <- TRUE
+  attr(dta, "event.process")         <- event.info$event.process
+  attr(dta, "event.process.info")    <- event.info[c(
+    "requested", "inferred", "event.process", "terminal.valid",
+    "n.subject", "n.event", "n.event.subject",
+    "mean.events.per.subject", "max.events.per.subject",
+    "events.per.subject.summary"
+  )]
   dta
 }
 ## helper to clean and scale new (test) counting-process data for predict.rhf
@@ -156,10 +469,16 @@ cleanup.counting.newdata <- function(newdata,
                                      max.time,
                                      sorted = FALSE,
                                      eps = 1e-6,
-                                     nonfinite.action = c("stop", "drop")) {
+                                     nonfinite.action = c("stop", "drop"),
+                                     event.process = c("auto", "terminal", "recurrent")) {
   nonfinite.action <- match.arg(nonfinite.action)
+  event.process <- .rhf.match.event.process(event.process)
   if (missing(newdata) || is.null(newdata)) {
     stop("Argument 'newdata' must be a non-null data.frame.")
+  }
+  stored.event.process <- attr(newdata, "event.process", exact = TRUE)
+  if (event.process == "auto" && !is.null(stored.event.process)) {
+    event.process <- .rhf.match.event.process(stored.event.process)
   }
   cn <- colnames(newdata)
   ## check subject variable present
@@ -180,11 +499,16 @@ cleanup.counting.newdata <- function(newdata,
     stop("Argument 'yvar.names' must refer to variables that are either all present in 'newdata' or all absent.")
   }
   yvar.present <- all(y.in)
-  start.nm <- stop.nm <- NULL
+  start.nm <- stop.nm <- event.nm <- NULL
   ## coerce start/stop once, early (if y present)
   if (yvar.present) {
+    if (length(yvar.names) < 3L) {
+      stop("Counting-process outcomes in 'newdata' must include start, stop, and event variables.",
+           call. = FALSE)
+    }
     start.nm <- yvar.names[1L]
     stop.nm  <- yvar.names[2L]
+    event.nm <- yvar.names[3L]
     for (nm in c(start.nm, stop.nm)) {
       v <- newdata[[nm]]
       if (is.factor(v)) {
@@ -220,6 +544,13 @@ cleanup.counting.newdata <- function(newdata,
     stop("After removing missing values from 'newdata' there are no observations left.")
   }
   dta <- newdata[cc, , drop = FALSE]
+  if (yvar.present) {
+    dta[[event.nm]] <- .rhf.coerce.event.code(
+      dta[[event.nm]],
+      binary = TRUE,
+      what = event.nm
+    )
+  }
   ## one-pass stable sort by subject encounter-order, then start time.
   ## If y is absent, group by subject while preserving within-subject order.
   if (isFALSE(sorted)) {
@@ -234,31 +565,115 @@ cleanup.counting.newdata <- function(newdata,
     }
   }
   start.scaled <- stop.scaled <- NULL
+  event.process.out <- if (event.process == "auto") NULL else event.process
   if (yvar.present) {
-    ## transform start/stop outcomes to the internal time scale
-    start.scaled <- .forward.time(dta[[start.nm]], time.map)
-    stop.scaled  <- .forward.time(dta[[stop.nm]],  time.map)
-    ## coherence check
-    nonfinite <- (!is.finite(start.scaled) | !is.finite(stop.scaled))
-    bad <- nonfinite | (stop.scaled <= start.scaled + eps)
-    bad[is.na(bad)] <- TRUE
-    if (any(nonfinite)) {
-      msg <- sprintf("Found %d row(s) in 'newdata' with non-finite start/stop after scaling.",
-                     sum(nonfinite))
-      if (nonfinite.action == "stop") {
-        stop(msg)
-      } else {
-        warning(msg)
-      }
+    ## Remove invalid start--stop rows before time transformation.  Finite
+    ## non-positive intervals are removed regardless of event status.  The
+    ## existing nonfinite.action setting continues to govern non-finite times.
+    start.raw <- dta[[start.nm]]
+    stop.raw  <- dta[[stop.nm]]
+    event.raw <- dta[[event.nm]]
+    raw.nonfinite <- !is.finite(start.raw) | !is.finite(stop.raw)
+    raw.bad <- raw.nonfinite | (stop.raw <= start.raw)
+    raw.nonfinite[is.na(raw.nonfinite)] <- TRUE
+    raw.bad[is.na(raw.bad)] <- TRUE
+    if (any(raw.nonfinite) && nonfinite.action == "stop") {
+      stop(sprintf(
+        "Found %d row(s) in 'newdata' with non-finite start/stop values.",
+        sum(raw.nonfinite)
+      ), call. = FALSE)
     }
-    if (any(bad)) {
-      dta <- dta[!bad, , drop = FALSE]
-      start.scaled <- start.scaled[!bad]
-      stop.scaled  <- stop.scaled[!bad]
+    if (any(raw.bad)) {
+      n.bad <- sum(raw.bad)
+      n.bad.event <- sum(event.raw[raw.bad] == 1L)
+      n.bad.nonevent <- n.bad - n.bad.event
+      warning(sprintf(
+        paste0(
+          "Removing %d row(s) from 'newdata' with non-finite or non-positive ",
+          "start--stop length (%d event row(s), %d non-event row(s)).%s"
+        ),
+        n.bad,
+        n.bad.event,
+        n.bad.nonevent,
+        if (n.bad.event > 0L) {
+          " Removed event rows will not contribute to the event process."
+        } else {
+          ""
+        }
+      ), call. = FALSE)
+      dta <- dta[!raw.bad, , drop = FALSE]
     }
     if (nrow(dta) == 0L) {
       stop("After removing invalid/non-positive length intervals from 'newdata' there are no observations left.")
     }
+    .rhf.validate.counting.intervals(
+      id = dta[[subj.names]],
+      start = dta[[start.nm]],
+      stop = dta[[stop.nm]],
+      eps = eps,
+      data.name = "newdata"
+    )
+    ## transform start/stop outcomes to the internal time scale
+    start.scaled <- .forward.time(dta[[start.nm]], time.map)
+    stop.scaled  <- .forward.time(dta[[stop.nm]],  time.map)
+    event.raw <- dta[[event.nm]]
+    ## Coherence check.  Do not use eps as a minimum interval width after
+    ## transformation; strict start < stop is the only length requirement.
+    nonfinite <- !is.finite(start.scaled) | !is.finite(stop.scaled)
+    bad.map <- !is.finite(start.scaled) |
+      !is.finite(stop.scaled) |
+      (stop.scaled <= start.scaled)
+    nonfinite[is.na(nonfinite)] <- TRUE
+    bad.map[is.na(bad.map)] <- TRUE
+    if (any(nonfinite) && nonfinite.action == "stop") {
+      stop(sprintf(
+        "Found %d row(s) in 'newdata' with non-finite start/stop after scaling.",
+        sum(nonfinite)
+      ), call. = FALSE)
+    }
+    if (any(bad.map)) {
+      n.bad <- sum(bad.map)
+      n.bad.event <- sum(event.raw[bad.map] == 1L)
+      n.bad.nonevent <- n.bad - n.bad.event
+      warning(sprintf(
+        paste0(
+          "Removing %d row(s) from 'newdata' with non-finite or non-positive ",
+          "length after time transformation (%d event row(s), %d non-event row(s)).%s"
+        ),
+        n.bad,
+        n.bad.event,
+        n.bad.nonevent,
+        if (n.bad.event > 0L) {
+          " Removed event rows will not contribute to the event process."
+        } else {
+          ""
+        }
+      ), call. = FALSE)
+      dta <- dta[!bad.map, , drop = FALSE]
+      start.scaled <- start.scaled[!bad.map]
+      stop.scaled  <- stop.scaled[!bad.map]
+    }
+    if (nrow(dta) == 0L) {
+      stop("After removing invalid/non-positive length intervals from 'newdata' there are no observations left.")
+    }
+    event.info <- .rhf.event.process.info(
+      id = dta[[subj.names]],
+      event = dta[[event.nm]],
+      start = start.scaled,
+      stop = stop.scaled,
+      event.process = event.process,
+      binary = TRUE,
+      what = event.nm,
+      presorted = TRUE
+    )
+    if (event.info$requested == "terminal" && !event.info$terminal.valid) {
+      stop("Terminal-event RHF data in 'newdata' may contain at most one event per subject, ",
+           "and an event row must be the final row for that subject. ",
+           "Use event.process = 'recurrent' for recurrent-event data.",
+           call. = FALSE)
+    }
+    event.process.out <- event.info$event.process
+    attr(dta, "event.process") <- event.process.out
   }
   attr(dta, "sorted.by.subj.start") <- isTRUE(yvar.present)
   ## initialise outputs only after final filtering to avoid extra copies
@@ -283,7 +698,8 @@ cleanup.counting.newdata <- function(newdata,
     subj         = subj.newdata,
     xvar         = xvar.newdata,
     yvar         = yvar.newdata,
-    yvar.present = yvar.present
+    yvar.present = yvar.present,
+    event.process = event.process.out
   )
 }
 get.duplicated <- function(x) {
@@ -458,11 +874,22 @@ timegrid.min.events <- function(data,
   #attr(grid, "min.events.per.gap_eff") <- m_eff
   grid
 }
-get.grow.event.info <- function(yvar, fmly, need.deaths = TRUE, ntime, min.events.per.gap) {
+get.grow.event.info <- function(yvar,
+                                fmly,
+                                need.deaths = TRUE,
+                                ntime,
+                                min.events.per.gap,
+                                subj = NULL,
+                                event.process = c("auto", "terminal", "recurrent"),
+                                process.info = NULL) {
+  event.process <- .rhf.match.event.process(event.process)
+  event <- event.type <- cens <- time.interest <- time <- start.time <- NULL
+  r.dim <- NULL
+  event.process.out <- NULL
+  n.event <- n.event.subject <- n.subject <- n.unique.event.time <- NULL
+  mean.events.per.subject <- max.events.per.subject <- NULL
+  events.per.subject.summary <- NULL
   if (grepl("surv", fmly)) {
-    ##-----------------------------------------------------------
-    ## survival, competing risks, or time dependent covariates
-    ##-----------------------------------------------------------
     if (dim(yvar)[2] == 2) {
       ##---------------------------------
       ## survival or competing risks:
@@ -475,18 +902,12 @@ get.grow.event.info <- function(yvar, fmly, need.deaths = TRUE, ntime, min.event
       if (!all(floor(cens) == abs(cens), na.rm = TRUE)) {
         stop("for survival families censoring variable must be coded as a non-negative integer (perhaps the formula is set incorrectly?)")
       }
-      ## check if deaths are available (if user specified)
+      ## check if events are available (if user specified)
       if (need.deaths && (all(na.omit(cens) == 0))) {
-        stop("no deaths in data!")
+        stop("no events in data!")
       }
-      ## Check for event time consistency.
-      ## we over-ride this now to allow for negative time (see Stute)
-      ##if (!all(na.omit(time) >= 0)) {
-      ##  stop("time must be  positive")
-      ##}
       ## Extract the unique event types.
       event.type <- unique(na.omit(cens))
-      ## Ensure they are all greater than or equal to zero.
       if (sum(event.type >= 0) != length(event.type)) {
         stop("censoring variable must be coded as NA, 0, or greater than 0.")
       }
@@ -513,36 +934,102 @@ get.grow.event.info <- function(yvar, fmly, need.deaths = TRUE, ntime, min.event
           }))
         }
       }
-    }
-    ##-------------------------------
-    ## time dependent covariates:
-    ##-------------------------------
-    else {
+      ## A two-column response is a terminal-event representation.
+      event.process.out <- "terminal"
+      event.indicator <- as.integer(!is.na(cens) & cens != 0)
+      n.event <- sum(event.indicator)
+      n.event.subject <- n.event
+      n.subject <- length(cens)
+      n.unique.event.time <- length(unique(time[!is.na(time) & event.indicator == 1L]))
+      mean.events.per.subject <- if (n.subject > 0L) n.event / n.subject else NA_real_
+      max.events.per.subject <- if (n.subject > 0L) max(event.indicator) else NA_integer_
+      if (n.subject > 0L) {
+        q <- stats::quantile(event.indicator,
+                             probs = c(0, 0.25, 0.50, 0.75, 1),
+                             names = FALSE,
+                             type = 1)
+        events.per.subject.summary <- c(
+          min = q[1L], q1 = q[2L], median = q[3L],
+          mean = mean(event.indicator), q3 = q[4L], max = q[5L]
+        )
+      }
+    } else {
+      ##-------------------------------
+      ## time dependent covariates:
+      ##-------------------------------
       r.dim <- 3
       start.time <- yvar[, 1]
       time <- yvar[, 2]
-      cens <- yvar[, 3]
-      ## censoring must be coded coherently
-      if (!all(floor(cens) == abs(cens), na.rm = TRUE)) {
-        stop("for survival families censoring variable must be coded as a non-negative integer (perhaps the formula is set incorrectly?)")
-      }
-      ## check if deaths are available (if user specified)
-      if (need.deaths && (all(na.omit(cens) == 0))) {
-        stop("no deaths in data!")
+      cens <- .rhf.coerce.event.code(
+        yvar[, 3],
+        binary = TRUE,
+        what = "event"
+      )
+      ## check if events are available (if user specified)
+      if (need.deaths && all(cens == 0L)) {
+        stop("no events in data!")
       }
       ## Check for event time consistency.
       if (!all(na.omit(time) >= 0)) {
-        stop("time must be  positive")
+        stop("time must be positive")
       }
-      ## Extract the unique event types.
-      event.type <- unique(na.omit(cens))
-      ## Ensure they are all greater than or equal to zero.
-      if (sum(event.type >= 0) != length(event.type)) {
-        stop("censoring variable must be coded as NA, 0, or greater than 0.")
-      }
-      ## Discard the censored state, if it exists.
-      event <- na.omit(cens)[na.omit(cens) > 0]
+      ## The recurrent extension has one nonzero event type, coded 1.
+      event <- cens[cens > 0L]
       event.type <- unique(event)
+      if (!is.null(process.info)) {
+        required.process.fields <- c(
+          "event.process", "n.event", "n.event.subject", "n.subject",
+          "mean.events.per.subject", "max.events.per.subject",
+          "events.per.subject.summary"
+        )
+        missing.process.fields <- setdiff(required.process.fields, names(process.info))
+        if (length(missing.process.fields)) {
+          stop("The supplied event-process summary is incomplete: ",
+               paste(missing.process.fields, collapse = ", "),
+               call. = FALSE)
+        }
+      } else if (!is.null(subj)) {
+        if (length(subj) != length(cens)) {
+          stop("The subject vector and counting-process response have incompatible lengths.",
+               call. = FALSE)
+        }
+        process.info <- .rhf.event.process.info(
+          id = subj,
+          event = cens,
+          start = start.time,
+          stop = time,
+          event.process = event.process,
+          binary = TRUE,
+          what = "event"
+        )
+        if (process.info$requested == "terminal" && !process.info$terminal.valid) {
+          stop("Terminal-event RHF data may contain at most one event per subject, ",
+               "and an event row must be the final row for that subject. ",
+               "Use event.process = 'recurrent' for recurrent-event data.",
+               call. = FALSE)
+        }
+      }
+      if (!is.null(process.info)) {
+        event.process.out <- process.info$event.process
+        n.event <- process.info$n.event
+        n.event.subject <- process.info$n.event.subject
+        n.subject <- process.info$n.subject
+        mean.events.per.subject <- process.info$mean.events.per.subject
+        max.events.per.subject <- process.info$max.events.per.subject
+        events.per.subject.summary <- process.info$events.per.subject.summary
+      } else {
+        ## Subject-level summaries require the row-to-subject map.  Existing
+        ## callers without this map retain terminal behavior unless recurrent
+        ## mode was explicitly requested.
+        event.process.out <- if (event.process == "recurrent") "recurrent" else "terminal"
+        n.event <- sum(cens != 0L)
+        n.event.subject <- NA_integer_
+        n.subject <- NA_integer_
+        mean.events.per.subject <- NA_real_
+        max.events.per.subject <- NA_integer_
+        events.per.subject.summary <- NULL
+      }
+      n.unique.event.time <- length(unique(time[cens != 0L]))
       ## Set grid of time points.
       nonMissingOutcome <- which(!is.na(cens) & !is.na(time))
       nonMissingDeathFlag <- (cens[nonMissingOutcome] != 0)
@@ -554,38 +1041,49 @@ get.grow.event.info <- function(yvar, fmly, need.deaths = TRUE, ntime, min.event
       }
       if (!is.null(ntime) && !((length(ntime) == 1) && ntime == 0)) {
         if (length(ntime) == 1) {
-          time.interest <- timegrid.min.events(data.frame(stop=time, event=cens),
-                                               ntime = ntime,
-                                               min.events.per.gap = min.events.per.gap)
-        }
-        else {
+          time.interest <- timegrid.min.events(
+            data.frame(stop = time, event = cens),
+            ntime = ntime,
+            min.events.per.gap = min.events.per.gap
+          )
+        } else {
           time.interest <- unique(sapply(ntime, function(tt) {
             time.interest[max(1, sum(tt >= time.interest, na.rm = TRUE))]
           }))
         }
       }
     }
-  }
-  ##---------------------
-  ## other families
-  ##---------------------
-  else {
+  } else {
+    ##---------------------
+    ## other families
+    ##---------------------
     if ((fmly == "regr+") | (fmly == "class+") | (fmly == "mix+")) {
       r.dim <- dim(yvar)[2]
-    }
-    else {
+    } else {
       if (fmly == "unsupv") {
         r.dim <- 0
-      }
-      else {
+      } else {
         r.dim <- 1
       }
     }
-    event <- event.type <- cens <- time.interest <- cens <- time <- start.time <- NULL
   }
-  return(list(event = event, event.type = event.type, cens = cens,
-              time.interest = time.interest,
-              time = time, start.time = start.time, r.dim = r.dim))
+  return(list(
+    event = event,
+    event.type = event.type,
+    cens = cens,
+    time.interest = time.interest,
+    time = time,
+    start.time = start.time,
+    r.dim = r.dim,
+    event.process = event.process.out,
+    n.event = n.event,
+    n.event.subject = n.event.subject,
+    n.subject = n.subject,
+    n.unique.event.time = n.unique.event.time,
+    mean.events.per.subject = mean.events.per.subject,
+    max.events.per.subject = max.events.per.subject,
+    events.per.subject.summary = events.per.subject.summary
+  ))
 }
 ####################################################################
 ##
@@ -713,6 +1211,32 @@ convert.standard.counting <- function(formula, data,
     event.val  <- event.val[valid.id]
   } else {
     row.map <- seq_along(id)
+  }
+  ## Collapsing to a one-row survival outcome is not defined for a recurrent
+  ## event process.  Covariate-only snapshots remain available through
+  ## return.type = "x".
+  declared.event.process <- attr(data, "event.process", exact = TRUE)
+  if (is.null(declared.event.process)) {
+    declared.event.process <- "auto"
+  }
+  declared.event.process <- .rhf.match.event.process(declared.event.process)
+  process.info <- .rhf.event.process.info(
+    id = id,
+    event = as.integer(!is.na(event.val) & event.val != 0),
+    start = start.time,
+    stop = stop.time,
+    event.process = declared.event.process,
+    binary = TRUE,
+    what = event.nm
+  )
+  recurrent.data <- identical(process.info$event.process, "recurrent") ||
+                    !isTRUE(process.info$terminal.valid)
+  if (return.type == "survival" && recurrent.data) {
+    stop("convert.standard.counting(..., return.type = 'survival') is not defined ",
+         "for recurrent-event data because collapsing to one row per subject ",
+         "would discard recurrent event times. Use return.type = 'x' for a ",
+         "covariate snapshot, or define an explicit single-event target before conversion.",
+         call. = FALSE)
   }
   n <- length(id)
   x.cols <- setdiff(names(data), req)

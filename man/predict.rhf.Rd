@@ -8,31 +8,66 @@
 }
 
 \usage{\method{predict}{rhf}(object, newdata,  get.tree = NULL,
-     block.size = 10, membership = TRUE, seed = NULL, do.trace = FALSE,...)}
+     block.size = 10, membership = TRUE, adaptive = TRUE,
+     seed = NULL, do.trace = FALSE,...)}
 
 \arguments{
 
-  \item{object}{An \code{rhf} object returned from a previous training call to \code{rhf}.}
+  \item{object}{An \code{rhf} object returned from a previous training
+    call to \code{rhf}.}
+  
 
-  \item{newdata}{Test data frame. If omitted, the original training data is used and the full training forest is restored.}
+  \item{newdata}{Test data frame. If omitted, the original training data
+    is used and the full training forest is restored.}
+  
 
-  \item{get.tree}{Optional vector of integer indices specifying which trees to use for ensemble predictions. Defaults to using all trees in the forest.}
+  \item{get.tree}{Optional vector of integer indices specifying which
+  trees to use for ensemble predictions. Defaults to using all trees in
+  the forest. Currently ignored, future functionality.}
 
-  \item{block.size}{Controls how cumulative error rate is reported. To obtain cumulative error every \code{n} trees, set this to an integer between 1 and \code{ntree}.}
 
-  \item{membership}{Logical flag indicating whether terminal node membership and inbag information should be returned.}
+  \item{block.size}{Controls how cumulative error rate is reported. To
+  obtain cumulative error every \code{n} trees, set this to an integer
+  between 1 and \code{ntree}.  Currently ignored.}
 
-  \item{seed}{Negative integer specifying the random seed for reproducibility.}
 
-  \item{do.trace}{Number of seconds between progress updates printed to the console.}
+  \item{membership}{Logical flag indicating whether terminal node
+    membership and inbag information should be returned.}
+  
+
+  \item{adaptive}{Logical flag controlling the default trimmed-mean
+    protocol used by prediction and restore mode. The default
+    \code{TRUE} inherits the adaptive trim configuration saved with the
+    trained forest. Setting \code{adaptive = FALSE} replaces the default
+    or inherited trim grid by the fixed value \code{0.05}, unless an
+    expert-level \code{coe.trim} value is supplied through \code{...}.}
+  
+
+  \item{seed}{Negative integer specifying the random seed for
+    reproducibility.}
+  
+
+  \item{do.trace}{Number of seconds between progress updates printed to
+    the console.}
+  
 
   \item{...}{Additional optional arguments passed to internal methods.}
+  
 
 }
 
 \details{
 
   Returns the predicted values for a random hazard forests.
+
+  Prediction inherits the hazard calculation configuration saved with
+  the trained forest. In ordinary test-data prediction there is no OOB
+  objective for reselecting the trim value, so the grow-time
+  selected index is used. In restore mode, the stored forest can
+  reconstruct OOB quantities and may reselect the trim value over the
+  active candidate grid. Setting \code{adaptive = FALSE} changes that
+  grid to the single value \code{0.05}, unless \code{coe.trim} is
+  supplied through \code{...}.
   
 }
 
@@ -81,6 +116,11 @@ object.
   hazards with time-dependent covariates. \emph{Annals of Statistics},
   49: 2101-2128.
 
+  Ishwaran H. (2025). Multivariate Statistics: Classical Foundations and
+  Modern Machine Learning.  Chapman and Hall.
+
+  Ishwaran H., Kogalur U.B., Hsich E.M. and Lee D.K. (2026).  Random
+  hazard forests.
 
 
 }
@@ -107,6 +147,9 @@ print(o)
 ## testing
 p <- predict(o, tst)
 print(p)
+
+## fixed trim protocol
+p.fixed <- predict(o, tst, adaptive = FALSE)
 
 \donttest{
 

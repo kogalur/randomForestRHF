@@ -14,6 +14,7 @@ rhf <- function(formula,
                 xvar.wt = NULL,
                 ntime = 50,
                 min.events.per.gap = 10,
+                adaptive = TRUE,
                 seed = NULL,
                 do.trace = FALSE,
                 ...
@@ -21,9 +22,13 @@ rhf <- function(formula,
 {
   bootstrap <- match.arg(bootstrap, c("by.root", "none", "by.user"))
   samptype <- match.arg(samptype, c("swor", "swr"))
+  adaptive <- get.adaptive(adaptive)
+  dots <- list(...)
+  hazard.options <- get.hazard.options(dots, adaptive = adaptive)
+  dots[names(hazard.options)] <- hazard.options
   do.call("rhf.workhorse", c(list(
-                             formula=formula,
-                             data=data,
+                             formula = formula,
+                             data = data,
                              ntree = ntree,
                              nsplit = nsplit,
                              treesize = treesize,
@@ -38,7 +43,8 @@ rhf <- function(formula,
                              xvar.wt = xvar.wt,
                              ntime = ntime,
                              min.events.per.gap = min.events.per.gap,
+                             adaptive = adaptive,
                              seed = seed,
                              do.trace = do.trace),
-                             list(...)))
+                             dots))
 }

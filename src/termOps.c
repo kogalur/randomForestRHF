@@ -34,10 +34,15 @@ void *makeTerminalDerived(void) {
   parent -> oobMembrIndx  = NULL;
   parent -> tstMembrIndx  = NULL;
   parent -> ratio         = NULL;
+  parent -> nodeU         = NULL;
+  parent -> nodeV         = NULL;
+  parent -> coeHazard     = NULL;
+  parent -> coeCHF        = NULL;
   return parent;
 }
 void freeTerminalDerived(void *parent) {
   unstackRatio((Terminal *) parent);
+  unstackCOEObjects((Terminal *) parent);
   deinitTerminalBase((TerminalBase *) parent);
   if (((Terminal *) parent) -> allMembrSize > 0) {
     free_uivector(((Terminal *) parent) -> oobMembrIndx,  1, ((Terminal *) parent) -> allMembrSize);
@@ -60,5 +65,33 @@ void unstackRatio(Terminal *tTerm) {
   if (tTerm -> ratio != NULL) {
     free_dvector(tTerm -> ratio, 1, sTerm -> sTimeSize);
     tTerm -> ratio = NULL;
+  }
+}
+void stackCOEObjects(Terminal *tTerm) {
+  TerminalSurvival *sTerm;
+  sTerm = ((TerminalBase *) tTerm) -> survivalBase;
+  tTerm -> nodeU = dvector(1, sTerm -> sTimeSize);
+  tTerm -> nodeV = dvector(1, sTerm -> sTimeSize);
+  tTerm -> coeHazard = dvector(1, sTerm -> sTimeSize);
+  tTerm -> coeCHF    = dvector(1, sTerm -> sTimeSize);
+}
+void unstackCOEObjects(Terminal *tTerm) {
+  TerminalSurvival *sTerm;
+  sTerm = ((TerminalBase *) tTerm) -> survivalBase;
+  if (tTerm -> nodeU != NULL) {
+    free_dvector(tTerm -> nodeU, 1, sTerm -> sTimeSize);
+    tTerm -> nodeU = NULL;
+  }
+  if (tTerm -> nodeV != NULL) {
+    free_dvector(tTerm -> nodeV, 1, sTerm -> sTimeSize);
+    tTerm -> nodeV = NULL;
+  }
+  if (tTerm -> coeHazard != NULL) {
+    free_dvector(tTerm -> coeHazard, 1, sTerm -> sTimeSize);
+    tTerm -> coeHazard = NULL;
+  }
+  if (tTerm -> coeCHF != NULL) {
+    free_dvector(tTerm -> coeCHF, 1, sTerm -> sTimeSize);
+    tTerm -> coeCHF = NULL;
   }
 }

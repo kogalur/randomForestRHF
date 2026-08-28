@@ -31,7 +31,13 @@ hazard.simulation(type = 1,
   n = 500, p = 10, nrecords = 7,
   scale = FALSE, ngrid = 1e5, ...)
 
-xvar.wt.rhf(f, d, scale = 4, parallel = TRUE)
+xvar.wt.rhf(f, 
+    d,
+    scale = 4,
+    rank.by = c("q90", "median", "mean", "max", "sum"),
+    rhf.args = list(),
+    cache.args = list())
+
 }
 
 \arguments{
@@ -85,8 +91,6 @@ xvar.wt.rhf(f, d, scale = 4, parallel = TRUE)
 
   \item{...}{Additional arguments passed to the selected simulation engine.}
 
-  \item{parallel}{Logical; if \code{TRUE}, allow parallel work in
-  \code{xvar.wt.rhf()}.}
 }
 
 \details{

@@ -59,13 +59,12 @@ char processDefaultPredict(void) {
     if (RF_frSize == 0) {
       RF_opt                  = RF_opt & (~OPT_PERF);
     }
-    RF_opt = RF_opt & (~OPT_MEMB_USER);
     break;
   case RF_REAL:
     RF_frSize = RF_fobservationSize = 0;
     RF_opt = RF_opt & (~OPT_OENS);
     RF_opt = RF_opt & (~OPT_PERF);
-    RF_opt = RF_opt & (~OPT_MEMB_USER);
+    RF_optHigh = RF_optHigh & (~OPT_MEMB_USER);
     break;
   case RF_REST:
     RF_frSize = RF_fobservationSize = 0;

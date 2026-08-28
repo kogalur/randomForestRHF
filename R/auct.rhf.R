@@ -2,6 +2,8 @@
 ##
 ## main wrapper function
 ##
+## Incident-marker revision: 2026-08-25.3
+##
 ##########################################################################
 auct.rhf <- function(object,
                      marker = c("cumhaz",  "hazard", "chf", "haz"),
@@ -35,17 +37,26 @@ auct.rhf <- function(object,
   if (!any(keep.time))
     stop("No time.interest <= tau.")
   times <- times.full[keep.time]
-  ## Pick the requested marker; no conversions/fallbacks
+  ## Pick the requested public marker matrix.  For incident hazard AUC,
+  ## off-grid event cases are restored below from the pre-mask interval
+  ## hazard while every other path-domain NA remains unchanged.
   get.mat <- function(name.oob, name.test) {
-    if (!is.null(object[[name.oob]])) return(object[[name.oob]])
-    if (!is.null(object[[name.test]])) return(object[[name.test]])
+    if (!is.null(object[[name.oob]])) {
+      return(list(value = object[[name.oob]], ensemble = "oob"))
+    }
+    if (!is.null(object[[name.test]])) {
+      return(list(value = object[[name.test]], ensemble = "test"))
+    }
     NULL
   }
-  Z <- switch(marker,
-              "cumhaz" = get.mat("chf.oob", "chf.test"),
-              "hazard" = get.mat("hazard.oob", "hazard.test"))
-  if (is.null(Z))
+  marker.object <- switch(
+    marker,
+    "cumhaz" = get.mat("chf.oob", "chf.test"),
+    "hazard" = get.mat("hazard.oob", "hazard.test")
+  )
+  if (is.null(marker.object))
     stop("Requested marker matrix is missing in RHF object.")
+  Z <- as.matrix(marker.object$value)
   Z <- Z[, keep.time, drop = FALSE]
   ## --- 2) Outcomes and subject alignment (RHF-specific extraction) ---
   YY <- if (is.null(object$id) || is.null(object$yvar)) {
@@ -63,6 +74,81 @@ auct.rhf <- function(object,
     data.frame(id = object$id, yv)
   }
   YY$id <- as.character(YY$id)
+  ## auct.rhf() uses terminal-event case/control definitions and reduces each
+  ## subject to the final event/censoring row.  Detect recurrent input before
+  ## entering the model-agnostic core so it cannot be analyzed silently as a
+  ## single-event outcome.
+  process.candidates <- c(
+    object$event.process,
+    if (is.list(object$event.info)) object$event.info$event.process else NULL,
+    if (is.list(object$forest)) object$forest$event.process else NULL,
+    if (is.list(object$forest) && is.list(object$forest$event.info)) {
+      object$forest$event.info$event.process
+    } else NULL,
+    if (is.list(object$forest) && is.list(object$forest$parms)) {
+      object$forest$parms$event.process
+    } else NULL,
+    attr(ydata, "event.process", exact = TRUE)
+  )
+  process.candidates <- as.character(process.candidates)
+  process.candidates <- process.candidates[
+    !is.na(process.candidates) & nzchar(process.candidates)
+  ]
+  declared.recurrent <- any(process.candidates == "recurrent")
+  process.info <- tryCatch(
+    .rhf.event.process.info(
+      id = YY$id,
+      event = YY$event,
+      start = YY$start,
+      stop = YY$stop,
+      event.process = "auto",
+      binary = TRUE,
+      what = "event"
+    ),
+    error = function(e) {
+      stop("auct.rhf() requires a complete 0/1 terminal-event outcome: ",
+           conditionMessage(e), call. = FALSE)
+    }
+  )
+  recurrent.data <- declared.recurrent ||
+                    identical(process.info$inferred, "recurrent") ||
+                    !isTRUE(process.info$terminal.valid)
+  if (recurrent.data) {
+    stop(
+      "auct.rhf() is available only for terminal single-event RHF data. ",
+      "Recurrent-event data were detected (a subject has multiple event rows ",
+      "or follow-up continues after an event). Recurrent-event AUC requires a ",
+      "separate case/control definition and is not currently implemented.",
+      call. = FALSE
+    )
+  }
+  YY$event <- process.info$event
+  ## The subject order of every RHF ensemble matrix is defined by
+  ## object$ensemble.id. Matrix row names are only a secondary diagnostic:
+  ## native output may omit them or retain syntactically valid row names that
+  ## are not the outcome IDs. Canonicalize the marker rows once here so the
+  ## incident restoration and the model-agnostic AUC core use the same order.
+  marker.alignment <- .rhf.auct.subject.ids(object, Z, YY)
+  rownames(Z) <- marker.alignment$ids
+  ## For an incident case with event time inside (t[k-1], t[k]), the public
+  ## pointwise hazard at t[k] is correctly NA because t[k] lies outside the
+  ## subject's path. Incident AUC nevertheless needs the pre-mask interval
+  ## hazard for that event-containing cell. Restore only those case markers;
+  ## controls and all other out-of-domain entries retain the public NA mask.
+  incident.marker <- NULL
+  if (identical(marker, "hazard") && identical(method, "incident")) {
+    incident.marker <- .rhf.restore.incident.hazard.cases(
+      object = object,
+      Z = Z,
+      YY = YY,
+      times = times,
+      keep.time = keep.time,
+      ensemble = marker.object$ensemble,
+      subject.ids = marker.alignment$ids,
+      alignment.source = marker.alignment$source
+    )
+    Z <- incident.marker$marker
+  }
   ## --- 3) Call model-agnostic core for AUC(t)/iAUC ---
   core <- .tdc_auct_core(times        = times,
                          Z            = Z,
@@ -112,77 +198,184 @@ auct.rhf <- function(object,
         bootstrap.refit <- FALSE
       } else {
         eval.df <- .rhf.build_data_from_object(object)
-        is.predict.obj <- inherits(object, "predict") && !is.null(object$hazard.oob)
+        is.predict.obj <- any(c("predict", "predict.rhf") %in% class(object))
         train.df <- eval.df
-        build.args <- function(parms, fml, dat) {
-          allowed <- c("ntree","treesize","nodesize","nsplit","mtry","ntime",
-                       "splitrule","experimental.bits","bootstrap","samptype",
-                       "xvar.wt","sampsize","case.wt","membership","seed",
-                       "do.trace","block.size")
+        ## A subject-level pairs bootstrap must retain every sampled copy.
+        ## Repeated draws are therefore expanded as complete counting-process
+        ## histories and assigned new IDs; using `%in%` would discard the
+        ## bootstrap multiplicities and reduce the number of subjects.
+        uid <- .rhf.unique.subject.order(train.df$id)
+        n.subjects <- length(uid)
+        subject.index <- match(as.character(train.df$id), uid)
+        if (n.subjects < 1L || anyNA(subject.index)) {
+          stop("Unable to construct subject blocks for the refit bootstrap.", call. = FALSE)
+        }
+        rows.by.subject <- split(seq_len(nrow(train.df)), subject.index)
+        ## Refit with the same hazard/CHF configuration used by the original
+        ## forest. For legacy objects without hazard.config, the helper applies
+        ## the current package defaults.
+        hazard.options <- get.hazard.options(
+          dots = list(),
+          hazard.config = parms$hazard.config
+        )
+        build.args <- function(parms, fml, dat, draw.index) {
+          ## `case.wt` and `samp` are handled separately because they are
+          ## indexed by subject and must follow the bootstrap draws.
+          allowed <- c("ntree", "treesize", "nodesize", "nsplit", "mtry",
+                       "ntime", "splitrule", "experimental.bits", "bootstrap",
+                       "samptype", "xvar.wt", "sampsize", "membership", "seed",
+                       "do.trace", "block.size", "min.events.per.gap")
           args <- list(formula = fml, data = dat)
           for (nm in intersect(names(parms), allowed)) {
             if (nm == "xvar.wt") {
               p <- ncol(dat) - 4L  # predictors only
-              if (length(parms$xvar.wt) == p) args$xvar.wt <- parms$xvar.wt
+              if (length(parms$xvar.wt) == p) {
+                args$xvar.wt <- parms$xvar.wt
+              }
             } else {
               args[[nm]] <- parms[[nm]]
             }
           }
+          if (!is.null(parms$case.wt)) {
+            if (length(parms$case.wt) != n.subjects) {
+              stop(
+                "Stored case.wt has length ", length(parms$case.wt),
+                ", but the refit data contain ", n.subjects, " subjects.",
+                call. = FALSE
+              )
+            }
+            args$case.wt <- parms$case.wt[draw.index]
+          }
+          if (identical(parms$bootstrap, "by.user")) {
+            if (is.null(parms$samp) || !is.matrix(parms$samp) ||
+                nrow(parms$samp) != n.subjects) {
+              stop(
+                "Stored by-user bootstrap sample is missing or has an incompatible number of rows.",
+                call. = FALSE
+              )
+            }
+            args$samp <- parms$samp[draw.index, , drop = FALSE]
+          }
+          ## Hidden hazard options are supplied individually through `...`.
+          args[names(hazard.options)] <- hazard.options
           args
+        }
+        try.message <- function(x) {
+          condition <- attr(x, "condition")
+          if (!is.null(condition)) {
+            conditionMessage(condition)
+          } else {
+            as.character(x)[1L]
+          }
+        }
+        finite.sd <- function(x) {
+          x <- x[is.finite(x)]
+          if (length(x) >= 2L) stats::sd(x) else NA_real_
         }
         auc.mat    <- matrix(NA_real_, nrow = B, ncol = length(base.times))
         iauc.uno.v <- rep(NA_real_, B)
         iauc.std.v <- rep(NA_real_, B)
         fml <- as.formula("Surv(id, start, stop, event) ~ .")
-        uid <- unique(train.df$id)
+        fit.failures <- 0L
+        evaluation.failures <- 0L
+        first.failure <- NULL
         if (isTRUE(verbose) && B > 0L) {
           t.start <- proc.time()[3]
           step    <- max(1L, floor(B / 10L))
           message("auct.rhf bootstrap (refit): starting ", B, " replicates...")
         }
         for (bb in seq_len(B)) {
-          samp.ids <- sample(uid, length(uid), replace = TRUE)
-          tr.b <- train.df[train.df$id %in% samp.ids, , drop = FALSE]
-          args.fit <- build.args(parms, fml, tr.b)
+          draw.index <- sample.int(n.subjects, n.subjects, replace = TRUE)
+          selected.blocks <- rows.by.subject[draw.index]
+          row.index <- unlist(selected.blocks, use.names = FALSE)
+          tr.b <- train.df[row.index, , drop = FALSE]
+          tr.b$id <- rep(seq_len(n.subjects), times = lengths(selected.blocks))
+          rownames(tr.b) <- NULL
+          args.fit <- build.args(
+            parms = parms,
+            fml = fml,
+            dat = tr.b,
+            draw.index = draw.index
+          )
           ofit <- try(do.call(rhf, args.fit), silent = TRUE)
-          if (inherits(ofit, "try-error")) next
-          ans.b <- try({
-            if (is.predict.obj) {
-              pr <- predict.rhf(ofit, eval.df)
-              auct.rhf(pr, marker = marker, method = method, tau = tau,
-                       riskset = riskset, min.controls = min.controls,
-                       nfrac.controls = nfrac.controls, min.cases = min.cases,
-                       g.floor = g.floor, g.floor.q = g.floor.q, power = power,
-                       ydata = eval.df, winsor.q = winsor.q, eps = eps,
-                       bootstrap.rep = 0L)
-            } else {
-              auct.rhf(ofit, marker = marker, method = method, tau = tau,
-                       riskset = riskset, min.controls = min.controls,
-                       nfrac.controls = nfrac.controls, min.cases = min.cases,
-                       g.floor = g.floor, g.floor.q = g.floor.q, power = power,
-                       winsor.q = winsor.q, eps = eps, bootstrap.rep = 0L)
+          if (inherits(ofit, "try-error")) {
+            fit.failures <- fit.failures + 1L
+            if (is.null(first.failure)) {
+              first.failure <- paste0("RHF refit: ", try.message(ofit))
             }
-          }, silent = TRUE)
-          if (inherits(ans.b, "try-error")) next
-          at   <- ans.b$AUC.by.time
-          aucb <- .rhf.align_auc_by_time(at$time, at$AUC, base.times)
-          auc.mat[bb, ] <- aucb
-          iauc.uno.v[bb] <- ans.b$iAUC.uno
-          iauc.std.v[bb] <- ans.b$iAUC.std
+          } else {
+            ans.b <- try({
+              if (is.predict.obj) {
+                pr <- predict.rhf(ofit, eval.df)
+                auct.rhf(pr, marker = marker, method = method, tau = tau,
+                         riskset = riskset, min.controls = min.controls,
+                         nfrac.controls = nfrac.controls, min.cases = min.cases,
+                         g.floor = g.floor, g.floor.q = g.floor.q, power = power,
+                         ydata = eval.df, winsor.q = winsor.q, eps = eps,
+                         bootstrap.rep = 0L)
+              } else {
+                auct.rhf(ofit, marker = marker, method = method, tau = tau,
+                         riskset = riskset, min.controls = min.controls,
+                         nfrac.controls = nfrac.controls, min.cases = min.cases,
+                         g.floor = g.floor, g.floor.q = g.floor.q, power = power,
+                         winsor.q = winsor.q, eps = eps, bootstrap.rep = 0L)
+              }
+            }, silent = TRUE)
+            if (inherits(ans.b, "try-error")) {
+              evaluation.failures <- evaluation.failures + 1L
+              if (is.null(first.failure)) {
+                first.failure <- paste0("AUC evaluation: ", try.message(ans.b))
+              }
+            } else {
+              at   <- ans.b$AUC.by.time
+              aucb <- .rhf.align_auc_by_time(at$time, at$AUC, base.times)
+              auc.mat[bb, ] <- aucb
+              iauc.uno.v[bb] <- ans.b$iAUC.uno
+              iauc.std.v[bb] <- ans.b$iAUC.std
+            }
+          }
           if (isTRUE(verbose) && B > 0L) {
-            step <- max(1L, floor(B / 10L))
             if (bb == 1L || bb %% step == 0L || bb == B) {
               t.now   <- proc.time()[3]
               elapsed <- t.now - t.start
               rate    <- elapsed / bb
               remain  <- max(0, rate * (B - bb))
-              message(sprintf("  [auct.rhf] refit bootstrap %d/%d  elapsed=%.1fs  approx.remaining=%.1fs", bb, B, elapsed, remain))
+              message(sprintf(
+                "  [auct.rhf] refit bootstrap %d/%d  elapsed=%.1fs  approx.remaining=%.1fs",
+                bb, B, elapsed, remain
+              ))
             }
           }
         }
-        auc.se      <- apply(auc.mat, 2L, stats::sd, na.rm = TRUE)
-        iauc.uno.se <- stats::sd(iauc.uno.v, na.rm = TRUE)
-        iauc.std.se <- stats::sd(iauc.std.v, na.rm = TRUE)
+        completed.rep <- B - fit.failures - evaluation.failures
+        finite.rep <- rowSums(is.finite(auc.mat)) > 0L |
+                      is.finite(iauc.uno.v) |
+                      is.finite(iauc.std.v)
+        informative.rep <- sum(finite.rep)
+        if (completed.rep == 0L) {
+          stop(
+            "All ", B, " refit bootstrap replicates failed",
+            if (!is.null(first.failure)) paste0(". First failure: ", first.failure) else ".",
+            call. = FALSE
+          )
+        }
+        if (informative.rep == 0L) {
+          stop(
+            "Refit bootstrap completed, but no replicate produced a finite AUC estimate. ",
+            "Check tau, min.controls, nfrac.controls, and min.cases.",
+            call. = FALSE
+          )
+        }
+        if (completed.rep < B) {
+          warning(
+            completed.rep, " of ", B, " refit bootstrap replicates completed successfully",
+            if (!is.null(first.failure)) paste0(". First failure: ", first.failure) else ".",
+            call. = FALSE
+          )
+        }
+        auc.se      <- apply(auc.mat, 2L, finite.sd)
+        iauc.uno.se <- finite.sd(iauc.uno.v)
+        iauc.std.se <- finite.sd(iauc.std.v)
         auc.lower <- auc.upper <- NULL
         if (is.finite(bootstrap.conf) && !is.na(bootstrap.conf) &&
             bootstrap.conf > 0 && bootstrap.conf < 1) {
@@ -341,7 +534,8 @@ auct.rhf <- function(object,
     g.floor.q    = g.floor.q,
     winsor.q     = winsor.q,
     times        = times,
-    diag.riskset = diag.riskset
+    diag.riskset = diag.riskset,
+    incident.marker = if (is.null(incident.marker)) NULL else incident.marker$diagnostic
   ), class = "auct.rhf")
 }
 auct <- auct.rhf
@@ -787,6 +981,226 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
     message(sprintf("  %*s : %s", w, paste0("Bootstrap (", mode.txt, ")"), se.txt))
   }
   invisible(x)
+}
+##########################################################################
+##
+## RHF incident-hazard marker restoration
+##
+## Public hazard matrices are NA outside each subject's path. For an off-grid
+## terminal event in (t[k-1], t[k]), this correctly makes the public pointwise
+## value at t[k] unavailable, but incident AUC still needs the pre-mask
+## interval hazard for that event case.
+##
+## Restoration uses the raw tree-specific hazard array and the fitted
+## ensemble aggregation rule. This directly recovers the same pre-mask
+## subject-by-time aggregate that was finalized into the public hazard matrix.
+## Only missing incident-case cells are restored; controls and every other
+## out-of-domain value retain the public NA mask.
+##
+##########################################################################
+.rhf.incident.valid.ids <- function(x, n = NULL) {
+  if (is.null(x)) return(FALSE)
+  x <- as.character(x)
+  if (!is.null(n) && length(x) != n) return(FALSE)
+  length(x) > 0L && !anyNA(x) && !anyDuplicated(x) && all(nzchar(x))
+}
+.rhf.auct.subject.ids <- function(object, Z, YY) {
+  Z <- as.matrix(Z)
+  outcome.ids <- as.character(YY$id)
+  outcome.order <- outcome.ids[!duplicated(outcome.ids)]
+  candidates <- list(
+    ensemble.id = object$ensemble.id,
+    marker.rownames = rownames(Z),
+    outcome.order = outcome.order
+  )
+  for (source in names(candidates)) {
+    ids <- candidates[[source]]
+    if (!.rhf.incident.valid.ids(ids, nrow(Z))) next
+    ids <- as.character(ids)
+    if (all(ids %in% outcome.order)) {
+      return(list(ids = ids, source = source))
+    }
+  }
+  stop(
+    "Unable to align the RHF marker matrix with the outcome subjects. ",
+    "Expected ", nrow(Z), " unique marker-row IDs and found ",
+    length(outcome.order), " unique outcome IDs.",
+    call. = FALSE
+  )
+}
+.rhf.incident.coe.options <- function(object) {
+  config <- object$hazard.config
+  if (!is.list(config) &&
+      is.list(object$forest) &&
+      is.list(object$forest$parms)) {
+    config <- object$forest$parms$hazard.config
+  }
+  if (!is.list(config)) return(NULL)
+  rule <- config$coe.aggregate.selected
+  if (is.null(rule) || !length(rule) || is.na(rule[[1L]])) {
+    rule <- config$coe.aggregate
+  }
+  if (is.null(rule) || !length(rule) || is.na(rule[[1L]])) return(NULL)
+  rule <- as.character(rule[[1L]])
+  trim.index <- suppressWarnings(as.integer(config$coe.trim.index)[1L])
+  if (!is.na(trim.index) && trim.index == 0L) rule <- "median"
+  if (!(rule %in% c("trimmed.mean", "median", "mean"))) return(NULL)
+  trim <- NA_real_
+  if (identical(rule, "trimmed.mean")) {
+    selected <- suppressWarnings(as.double(config$coe.trim.selected)[1L])
+    if (is.finite(selected)) {
+      trim <- selected
+    } else {
+      grid <- suppressWarnings(as.double(config$coe.trim))
+      if (!is.na(trim.index) &&
+          trim.index >= 1L &&
+          trim.index <= length(grid) &&
+          is.finite(grid[[trim.index]])) {
+        trim <- grid[[trim.index]]
+      } else if (length(grid) == 1L && is.finite(grid[[1L]])) {
+        trim <- grid[[1L]]
+      }
+    }
+    if (!is.finite(trim) || trim < 0 || trim > 0.5) return(NULL)
+  }
+  list(rule = rule, trim = trim)
+}
+.rhf.incident.aggregate <- function(value, options) {
+  value <- as.double(value)
+  value <- value[is.finite(value)]
+  if (!length(value) || is.null(options)) return(NA_real_)
+  if (identical(options$rule, "median")) {
+    return(stats::median(value))
+  }
+  if (identical(options$rule, "mean")) {
+    return(mean(value))
+  }
+  trim <- options$trim
+  if (!is.finite(trim) || trim < 0 || trim > 0.5) return(NA_real_)
+  if (trim <= 0) return(mean(value))
+  cutpoint <- stats::quantile(
+    value,
+    probs = c(trim, 1 - trim),
+    type = 8,
+    names = FALSE,
+    na.rm = TRUE
+  )
+  mean(pmin(pmax(value, cutpoint[[1L]]), cutpoint[[2L]]))
+}
+.rhf.incident.restore.from.trees <- function(object, Z, ensemble,
+                                             event.subject, event.cell,
+                                             missing, keep.time) {
+  restored <- rep(FALSE, length(missing))
+  if (!any(missing)) return(list(marker = Z, restored = restored))
+  tree <- object[[paste0("hazard.tree.", ensemble)]]
+  options <- .rhf.incident.coe.options(object)
+  tree.dim <- dim(tree)
+  kept.cell <- which(keep.time)
+  if (is.null(tree) ||
+      length(tree.dim) != 3L ||
+      tree.dim[[1L]] != nrow(Z) ||
+      tree.dim[[2L]] != length(keep.time) ||
+      length(kept.cell) != ncol(Z) ||
+      is.null(options)) {
+    return(list(marker = Z, restored = restored))
+  }
+  ## Do not subset the complete subject-by-time-by-tree array. Only the
+  ## event-case vectors are touched, which keeps this path practical for large
+  ## forests and large longitudinal cohorts.
+  for (j in which(missing)) {
+    i <- event.subject[[j]]
+    k <- event.cell[[j]]
+    full.k <- kept.cell[[k]]
+    value <- .rhf.incident.aggregate(tree[i, full.k, ], options)
+    if (is.finite(value)) {
+      Z[i, k] <- value
+      restored[[j]] <- TRUE
+    }
+  }
+  list(marker = Z, restored = restored)
+}
+.rhf.restore.incident.hazard.cases <- function(object, Z, YY, times,
+                                               keep.time,
+                                               ensemble,
+                                               subject.ids = NULL,
+                                               alignment.source = NULL) {
+  Z <- as.matrix(Z)
+  if (!.rhf.incident.valid.ids(subject.ids, nrow(Z))) {
+    alignment <- .rhf.auct.subject.ids(object, Z, YY)
+    subject.ids <- alignment$ids
+    alignment.source <- alignment$source
+  }
+  subject.ids <- as.character(subject.ids)
+  rownames(Z) <- subject.ids
+  last <- YY[!duplicated(as.character(YY$id), fromLast = TRUE), , drop = FALSE]
+  last$id <- as.character(last$id)
+  last <- last[match(subject.ids, last$id), , drop = FALSE]
+  if (anyNA(last$id)) {
+    stop("Cannot align incident-event outcomes with the RHF marker rows.",
+         call. = FALSE)
+  }
+  event.subject <- which(
+    last$event == 1 & last$stop <= max(times, na.rm = TRUE)
+  )
+  event.cell <- if (length(event.subject)) {
+    vapply(
+      last$stop[event.subject],
+      function(value) {
+        hit <- which(times >= value)
+        if (length(hit)) hit[[1L]] else NA_integer_
+      },
+      integer(1L)
+    )
+  } else {
+    integer(0L)
+  }
+  mapped <- !is.na(event.cell)
+  event.subject <- event.subject[mapped]
+  event.cell <- event.cell[mapped]
+  if (!length(event.subject)) {
+    return(list(
+      marker = Z,
+      diagnostic = list(
+        ensemble = ensemble,
+        alignment = alignment.source,
+        events.in.grid = 0L,
+        missing.before = 0L,
+        restored = 0L,
+        restored.by.tree = 0L,
+        unavailable = 0L
+      )
+    ))
+  }
+  marker.index <- cbind(event.subject, event.cell)
+  missing.before.vector <- !is.finite(Z[marker.index])
+  missing.before <- sum(missing.before.vector)
+  tree.restored <- rep(FALSE, length(missing.before.vector))
+  if (missing.before > 0L) {
+    tree.answer <- .rhf.incident.restore.from.trees(
+      object = object,
+      Z = Z,
+      ensemble = ensemble,
+      event.subject = event.subject,
+      event.cell = event.cell,
+      missing = missing.before.vector,
+      keep.time = keep.time
+    )
+    Z <- tree.answer$marker
+    tree.restored <- tree.answer$restored
+  }
+  missing.after <- !is.finite(Z[marker.index])
+  list(
+    marker = Z,
+    diagnostic = list(
+      ensemble = ensemble,
+      alignment = alignment.source,
+      events.in.grid = length(event.subject),
+      missing.before = missing.before,
+      restored = sum(missing.before.vector & !missing.after),
+      restored.by.tree = sum(tree.restored),
+      unavailable = sum(missing.after)
+    )
+  )
 }
 ##########################################################################
 ##

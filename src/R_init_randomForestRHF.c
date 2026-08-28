@@ -20,7 +20,7 @@ extern SEXP entryGrow(SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
-                      SEXP);
+                      SEXP, SEXP);
 extern SEXP entryPred(SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
@@ -30,7 +30,8 @@ extern SEXP entryPred(SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
                       SEXP, SEXP, SEXP, SEXP,
-                      SEXP, SEXP, SEXP, SEXP);
+                      SEXP, SEXP, SEXP, SEXP,
+                      SEXP, SEXP, SEXP);
 extern SEXP weightedStitchedHazard(SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP,
@@ -40,8 +41,8 @@ extern SEXP medianLogStitchedHazard(SEXP, SEXP, SEXP, SEXP,
                                     SEXP, SEXP, SEXP, SEXP,
                                     SEXP);
 static const R_CallMethodDef CallEntries[] = {
-    {"entryGrow", (DL_FUNC) &entryGrow, 25},
-    {"entryPred", (DL_FUNC) &entryPred, 40},
+    {"entryGrow", (DL_FUNC) &entryGrow, 26},
+    {"entryPred", (DL_FUNC) &entryPred, 43},
     {"weightedStitchedHazard", (DL_FUNC) &weightedStitchedHazard, 14},
     {"medianLogStitchedHazard", (DL_FUNC) &medianLogStitchedHazard, 13},
     {NULL, NULL, 0}

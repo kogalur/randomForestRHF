@@ -5,6 +5,7 @@ predict.rhf.workhorse <-  function(object,
                                    seed = NULL,
                                    membership = FALSE,
                                    do.trace = FALSE,
+                                   adaptive = TRUE,
                                    ...)
 {
   ## confirm this is a rhf object
@@ -13,10 +14,31 @@ predict.rhf.workhorse <-  function(object,
   }
   ## hidden options (used later)
   dots <- list(...)
+  adaptive <- get.adaptive(adaptive)
+  ## Inherit the fitted forest's hazard configuration, then apply and validate
+  ## any prediction-specific overrides supplied through `...`.  Setting
+  ## adaptive = FALSE replaces the inherited/default trim grid with the
+  ## historical fixed value 0.05 unless coe.trim is supplied explicitly.
+  hazard.config <- get.hazard.options(
+    dots,
+    object$forest$parms$hazard.config,
+    adaptive = adaptive
+  )
+  ## Remove hazard options from the general-purpose dots list.
+  ## This prevents accidental forwarding or duplicate storage later.
+  for (option.name in names(hazard.config)) {
+    dots[[option.name]] <- NULL
+  }
   ## initialize the seed
   seed <- get.seed(seed)
-  ## uniform versus endpoint estimation hazard
-  experimental.bits <- get.experimental.bits(dots$experimental.bits, FALSE)
+  ## Uniform versus endpoint estimation hazard. The effective prediction
+  ## configuration controls option bits 4--6, as in grow mode.
+  experimental.bits <- get.experimental.bits(
+    dots$experimental.bits,
+    FALSE,
+    hazard.estimator = hazard.config$hazard.estimator,
+    coe.aggregate = hazard.config$coe.aggregate
+  )
   ## hard coded options (some are legacy)
   perf.type <- NULL
   ## set restore.mode and the ensemble option
@@ -52,10 +74,21 @@ predict.rhf.workhorse <-  function(object,
                      max.time = as.double(max.time),
                      tau = as.double(max.time))
   }
-  ## obtain y-outcome information from the grow object; scale y to [0,1]
-  yvar <- .iscale.yvar(object$yvar, time.map)
+  ## Obtain y-outcome information using the exact internal-scale
+  ## start/stop values supplied during forest growth.
   yvar.names <- object$yvar.names
   yvar.types <- object$yvar.types
+  start.name <- yvar.names[yvar.types == "t"]
+  stop.name <- yvar.names[yvar.types == "T"]
+  if (length(start.name) != 1L || length(stop.name) != 1L) {
+    stop(
+      "The fitted forest does not contain coherent start/stop response metadata.",
+      call. = FALSE
+    )
+  }
+  yvar <- as.matrix(object$yvar)
+  yvar[, start.name] <- event.info$start.time
+  yvar[, stop.name] <- event.info$time
   yvar.nlevels  <- object$yvar.factor$nlevels
   yvar.nlevels  <- NULL
   ## obtain x information from the grow object 
@@ -92,7 +125,7 @@ predict.rhf.workhorse <-  function(object,
   }
   else {
     object.version <- as.integer(unlist(strsplit(object$version, "[.]")))
-    installed.version <- as.integer(unlist(strsplit("1.0.2", "[.]")))
+    installed.version <- as.integer(unlist(strsplit("2.0.0", "[.]")))
     minimum.version <- as.integer(unlist(strsplit("0.0.0.0", "[.]")))
     object.version.adj <- object.version[1] + (object.version[2]/10) + (object.version[3]/100)
     installed.version.adj <- installed.version[1] + (installed.version[2]/10) + (installed.version[3]/100)
@@ -132,6 +165,7 @@ predict.rhf.workhorse <-  function(object,
     n.newdata <- nrow(newdata)
     ## get the test subjects
     subj.newdata  <- nd$subj
+    subj.newdata.output <- subj.newdata
     subj.newdata.unique.count <- length(unique(subj.newdata))
     ## restrict xvar to the training xvar.names
     xvar.newdata <- nd$xvar
@@ -143,9 +177,12 @@ predict.rhf.workhorse <-  function(object,
     if (yvar.present) {
       perf.type <- get.perf(perf.type, family)
     } else {
-      ## keep subj.newdata.unique.count for dimensionality,
-      ## but drop subj/y for performance calculations
+      ## Without start/stop/event, case-specific test ensembles cannot be
+      ## stitched across the working time grid.  Turn those outputs off, but
+      ## continue prediction so terminal membership and the training-derived
+      ## node.U/node.V tables remain available.
       subj.newdata <- yvar.newdata <- NULL
+      ensemble <- "none"
       perf.type <- "none"
     }
   }
@@ -159,6 +196,7 @@ predict.rhf.workhorse <-  function(object,
     ## The native code switches based on n.newdata being zero (0).  Be careful.
     n.newdata <- 0
     xvar.newdata <- yvar.newdata <-  subj.newdata  <- NULL
+    subj.newdata.output <- NULL
     ## perf type
     perf.type <- get.perf(perf.type, family)
   }
@@ -243,6 +281,8 @@ predict.rhf.workhorse <-  function(object,
                                            function(nn) {as.integer(yvar.nlevels[[nn]])})
                                   },
                                   if (is.null(yvar.types)) NULL else as.double(as.vector(data.matrix(yvar))),
+                                  list(if(is.null(event.info$time.interest)) as.integer(0) else as.integer(length(event.info$time.interest)),
+                                       if(is.null(event.info$time.interest)) NULL else as.double(event.info$time.interest)),
                                   list(as.integer(ncol(xvar)),
                                        if (is.null(xvar.types)) NULL else as.character(xvar.types),
                                        if (is.null(xvar.nlevels)) NULL else as.integer(xvar.nlevels),
@@ -284,6 +324,12 @@ predict.rhf.workhorse <-  function(object,
                                   as.integer(object$tombrCaseId),
                                   as.integer(get.tree),
                                   as.integer(block.size),
+                                  ## Pass the complete trim vector.  
+                                  as.double(hazard.config$coe.trim),
+                                  ## True prediction reuses the selected
+                                  ## grow-time candidate.  Restore mode may
+                                  ## replace this index after its OOB search.
+                                  as.integer(hazard.config$coe.trim.index),
                                   if (real.time) list(as.integer(real.time.options$port), as.integer(real.time.options$time.out)) else NULL,
                                   as.integer(get.rf.cores()))}, error = function(e){NULL})
   ## Stop the C external timer.
@@ -299,31 +345,69 @@ predict.rhf.workhorse <-  function(object,
       stop("An error has occurred in prediction.  Please turn trace on for further analysis.")
     }
   }
+  ## Restore mode can reselect coe.trim from the restored OOB risks.  True
+  ## prediction has no OOB objective and returns the grow-time selected index
+  ## supplied above.  Retain the effective protocol in the R-side object.
+  hazard.config <- .update.coe.trim.selection(hazard.config, nativeOutput)
+  nativeOutput$coeTrimIndex <- NULL
+  nativeOutput$coeTrimRiskOOB <- NULL
   ## sample size used for the return predict object
   n.observed = ifelse(restore.mode, nrow(xvar), n.newdata)
+  ## Membership targets the training observations in restore mode and
+  ## the test observations in predict mode.
+  pseudo.membership <- NULL
+  inbag.out <- NULL
+  if (membership) {
+    expected.membership.length <- n.observed * ntree
+    if (is.null(nativeOutput$nodeMembership) ||
+        length(nativeOutput$nodeMembership) != expected.membership.length) {
+      stop(paste0("Invalid native nodeMembership output: expected ",
+                  expected.membership.length, " values, received ",
+                  length(nativeOutput$nodeMembership), "."))
+    }
+    pseudo.membership <- matrix(nativeOutput$nodeMembership,
+                                nrow = n.observed,
+                                ncol = ntree)
+    nativeOutput$nodeMembership <- NULL
+    ## Bootstrap counts describe the training subjects and are meaningful
+    ## on the returned object only when restoring the training forest.
+    if (restore.mode) {
+      expected.inbag.length <- subj.unique.count * ntree
+      if (is.null(nativeOutput$bootstrapCount) ||
+          length(nativeOutput$bootstrapCount) != expected.inbag.length) {
+        stop(paste0("Invalid native bootstrapCount output: expected ",
+                    expected.inbag.length, " values, received ",
+                    length(nativeOutput$bootstrapCount), "."))
+      }
+      inbag.out <- matrix(nativeOutput$bootstrapCount,
+                          nrow = subj.unique.count,
+                          ncol = ntree)
+    }
+    nativeOutput$bootstrapCount <- NULL
+  }
+  unpack.coe.tree <- function(x, subj.count) {
+    if (!is.null(x)) {
+      array(x, c(subj.count, length(event.info$time.interest), ntree))
+    }
+    else {
+      NULL
+    }
+  }
   if (!restore.mode) {
       hazard.ibg <- NULL
       hazard.oob <- NULL
       chf.ibg <- NULL
       chf.oob <- NULL
+      coe.hazard.tree.ibg <- NULL
+      coe.hazard.tree.oob <- NULL
+      coe.chf.tree.ibg <- NULL
+      coe.chf.tree.oob <- NULL
       risk.ibg     <- NULL
       risk.oob     <- NULL
       int.haz.ibg <- NULL
       int.haz.oob <- NULL
-      inbag.out <- NULL
-      pseudo.membership <- NULL
   } 
   if (restore.mode) {
-    if (membership) {
-      pseudo.membership <- matrix(nativeOutput$nodeMembership, c(n.observed, ntree))
-      inbag.out <- matrix(nativeOutput$bootstrapCount, c(subj.unique.count, ntree))
-      nativeOutput$nodeMembership <- NULL
-      nativeOutput$bootstrapCount <- NULL
-    } 
-    else {
-      pseudo.membership <- NULL
-      inbag.out  <- NULL
-    }
     if (!is.null(nativeOutput$ensembleID)) {
       ensemble.id <- nativeOutput$ensembleID
     }
@@ -350,6 +434,34 @@ predict.rhf.workhorse <-  function(object,
     } else {
       chf.oob <- NULL
     }
+    if (!is.null(nativeOutput$coeHazardTreeIBG)) {      
+      coe.hazard.tree.ibg <- unpack.coe.tree(nativeOutput$coeHazardTreeIBG, subj.unique.count)
+    }
+    else {
+        coe.hazard.tree.ibg <- NULL
+    }
+    if (!is.null(nativeOutput$coeHazardTreeOOB)) {            
+      coe.hazard.tree.oob <- unpack.coe.tree(nativeOutput$coeHazardTreeOOB, subj.unique.count)
+    }
+    else {
+      coe.hazard.tree.oob <- NULL
+    }
+    if (!is.null(nativeOutput$coeCHFTreeIBG)) {
+      coe.chf.tree.ibg <- unpack.coe.tree(nativeOutput$coeCHFTreeIBG, subj.unique.count)
+    }
+    else {
+      coe.chf.tree.ibg <- NULL
+    }
+    if (!is.null(nativeOutput$coeCHFTreeOOB)) {
+      coe.chf.tree.oob <- unpack.coe.tree(nativeOutput$coeCHFTreeOOB, subj.unique.count)
+    }
+    else {
+      coe.chf.tree.oob <- NULL
+    }
+    nativeOutput$coeHazardTreeIBG <- NULL
+    nativeOutput$coeHazardTreeOOB <- NULL
+    nativeOutput$coeCHFTreeIBG    <- NULL
+    nativeOutput$coeCHFTreeOOB    <- NULL
     if (!is.null(nativeOutput$ibgRisk)) {
       risk.ibg <- nativeOutput$ibgRisk
     } else {
@@ -385,6 +497,8 @@ predict.rhf.workhorse <-  function(object,
     unscaled.risk.tst  <- NULL
     risk.tst     <- NULL
     int.haz.tst <- NULL
+    coe.hazard.tree.tst <- NULL
+    coe.chf.tree.tst <- NULL
     ttmbrCaseCt <- NULL
     ttmbrCaseId <- NULL
   } else {
@@ -409,6 +523,23 @@ predict.rhf.workhorse <-  function(object,
     } else {
       risk.tst <- NULL
     }
+    ## In prediction mode, the native layer currently overloads the IBG
+    ## COE tree slots for test-data stitching.  There are no distinct
+    ## coeHazardTreeTST / coeCHFTreeTST outgoing SEXPs.
+    if (!is.null(nativeOutput$coeHazardTreeIBG)) {
+      coe.hazard.tree.tst <- unpack.coe.tree(nativeOutput$coeHazardTreeIBG, subj.newdata.unique.count)
+    }
+    else {
+      coe.hazard.tree.tst <- NULL
+    }
+    if (!is.null(nativeOutput$coeCHFTreeIBG)) {
+      coe.chf.tree.tst <- unpack.coe.tree(nativeOutput$coeCHFTreeIBG, subj.newdata.unique.count)
+    }
+    else {
+        coe.chf.tree.tst <- NULL
+    }
+    nativeOutput$coeHazardTreeIBG <- NULL
+    nativeOutput$coeCHFTreeIBG <- NULL
     if (!is.null(nativeOutput$ibgWCase)) {
         int.haz.tst <- nativeOutput$ibgWCase
     } else {
@@ -450,6 +581,54 @@ predict.rhf.workhorse <-  function(object,
   } else {
       t.hazard <- NULL
   }
+  ## Terminal-node exposure, event counts, COE interval hazard, and COE
+  ## cumulative hazard are always reconstructed from the training outcomes and
+  ## replicated training membership restored with the forest.  Consequently,
+  ## these matrices are identical in restore and new-data prediction and do not
+  ## depend on test outcomes.  node.COE is rescaled below to the original hazard
+  ## scale.  node.cumulative.COE is a cumulative hazard and is not rescaled.
+  unpack.node.time <- function(x, native.name) {
+    if (is.null(x)) {
+      return(NULL)
+    }
+    q <- length(event.info$time.interest)
+    leaf.count <- as.integer(nativeOutput$leafCount)
+    if (length(leaf.count) != ntree || anyNA(leaf.count) || any(leaf.count < 0L)) {
+      stop(paste0("Invalid native leafCount output while unpacking ",
+                  native.name, "."))
+    }
+    expected.length <- sum(leaf.count) * q
+    if (length(x) != expected.length) {
+      stop(paste0("Invalid native ", native.name, " output: expected ",
+                  expected.length, " values, received ", length(x), "."))
+    }
+    out <- vector("list", ntree)
+    offset <- 0L
+    for (i in seq_len(ntree)) {
+      tree.length <- leaf.count[i] * q
+      if (tree.length > 0L) {
+        tree.index <- seq.int(offset + 1L, offset + tree.length)
+        out[[i]] <- matrix(x[tree.index],
+                           nrow=leaf.count[i],
+                           ncol=q,
+                           byrow=TRUE)
+      }
+      else {
+        out[[i]] <- matrix(numeric(0L), nrow=0L, ncol=q)
+      }
+      offset <- offset + tree.length
+    }
+    out
+  }
+  node.U <- unpack.node.time(nativeOutput$nodeU, "nodeU")
+  node.V <- unpack.node.time(nativeOutput$nodeV, "nodeV")
+  node.COE <- unpack.node.time(nativeOutput$nodeCOE, "nodeCOE")
+  node.cumulative.COE <- unpack.node.time(nativeOutput$nodeCumulativeCOE,
+                                        "nodeCumulativeCOE")
+  nativeOutput$nodeU <- NULL
+  nativeOutput$nodeV <- NULL
+  nativeOutput$nodeCOE <- NULL
+  nativeOutput$nodeCumulativeCOE <- NULL
   if (!is.null(nativeOutput$tHazardTimeCnt)) {
       t.haz.time.cnt  <- nativeOutput$tHazardTimeCnt
   }
@@ -479,6 +658,10 @@ predict.rhf.workhorse <-  function(object,
   if (!is.null(hazard.ibg)) hazard.ibg <- sweep(hazard.ibg, 2L, hz.scale, "*")
   if (!is.null(hazard.oob)) hazard.oob <- sweep(hazard.oob, 2L, hz.scale, "*")
   if (!is.null(hazard.tst)) hazard.tst <- sweep(hazard.tst, 2L, hz.scale, "*")
+  if (!is.null(coe.hazard.tree.ibg)) coe.hazard.tree.ibg <- sweep(coe.hazard.tree.ibg, 2L, hz.scale, "*")
+  if (!is.null(coe.hazard.tree.oob)) coe.hazard.tree.oob <- sweep(coe.hazard.tree.oob, 2L, hz.scale, "*")
+  if (!is.null(coe.hazard.tree.tst)) coe.hazard.tree.tst <- sweep(coe.hazard.tree.tst, 2L, hz.scale, "*")
+  if (!is.null(node.COE)) node.COE <- lapply(node.COE, function(h) sweep(h, 2L, hz.scale, "*"))
   if (!is.null(t.hazard)) {
     t.hazard <- lapply(t.hazard, function(h) sweep(h, 2L, hz.scale, "*"))
   }
@@ -489,7 +672,15 @@ predict.rhf.workhorse <-  function(object,
     family = family,
     n = n.observed,
     ntree = ntree,
-    yvar = if (restore.mode) as.data.frame(.scale.yvar(yvar, time.map)) else as.data.frame(.scale.yvar(yvar.newdata, time.map)),
+    yvar = if (restore.mode) {
+      as.data.frame(.scale.yvar(yvar, time.map))
+    }
+    else if (is.null(yvar.newdata)) {
+      NULL
+    }
+    else {
+      as.data.frame(.scale.yvar(yvar.newdata, time.map))
+    },
     xvar = if (restore.mode) xvar else xvar.newdata,
     xvar.time = object$xvar.time, 
     hcut = hcut,
@@ -504,6 +695,13 @@ predict.rhf.workhorse <-  function(object,
     chf.inbag = chf.ibg,
     chf.oob   = chf.oob,
     chf.test = chf.tst,
+    hazard.config = hazard.config,
+    hazard.tree.inbag = coe.hazard.tree.ibg,
+    hazard.tree.oob = coe.hazard.tree.oob,
+    hazard.tree.test = coe.hazard.tree.tst,
+    chf.tree.inbag = coe.chf.tree.ibg,
+    chf.tree.oob = coe.chf.tree.oob,
+    chf.tree.test = coe.chf.tree.tst,
     risk.inbag = risk.ibg,
     risk.oob   = risk.oob,
     risk.test  = risk.tst,
@@ -514,11 +712,15 @@ predict.rhf.workhorse <-  function(object,
     int.haz.right = int.haz.right,
     t.chf = t.chf,
     t.hazard = t.hazard,
+    node.U = node.U,
+    node.V = node.V,
+    node.COE = node.COE,
+    node.cumulative.COE = node.cumulative.COE,
     t.haz.time.cnt = t.haz.time.cnt,
     t.haz.time.idx = t.haz.time.idx,
     ttmbrCaseCt = ttmbrCaseCt,
     ttmbrCaseId = ttmbrCaseId,
-    id = if (restore.mode) id else subj.newdata,
+    id = if (restore.mode) id else subj.newdata.output,
     pseudo.membership = pseudo.membership,
     inbag = inbag.out,
     err.rate = err.rate,

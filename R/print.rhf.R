@@ -4,7 +4,8 @@ print.rhf <- function(x, digits = 3, label.width = 34, ...) {
   is_grow    <- "grow" %in% class(x)
   is_predict <- any(c("predict", "predict.rhf") %in% class(x))
   if (!(is_rhf && (is_grow || is_predict))) {
-    stop("print.rhf() supports only objects of class c('rhf','grow') or c('rhf','predict').")
+    print.default(x)
+    return()
   }
   has_test  <- is_predict && !is.null(x$risk.test)
   is_restore <- is_predict && !has_test
@@ -120,7 +121,15 @@ print.rhf <- function(x, digits = 3, label.width = 34, ...) {
     out <- c(out, .fmt("Total no. features", fint(length(x$forest$parms$xvar.wt))))
   }
   if (!is.null(x$family))    out <- c(out, .fmt("Family",    as.character(x$family)))
-  if (!is.null(x$splitrule)) out <- c(out, .fmt("Splitrule", as.character(x$splitrule)))
+  if (!is.null(x$splitrule)) {
+    splitrule <- as.character(x$splitrule)
+    if (!is.null(x$forest$parms) &&
+        .is_num1(x$forest$parms$nsplit) &&
+        x$forest$parms$nsplit > 0) {
+      splitrule <- paste(splitrule, "*random*")
+    }
+    out <- c(out, .fmt("Splitrule", splitrule))
+  }
   if (!is.null(x$forest$parms) && !is.null(x$forest$parms$nsplit)) {
     out <- c(out, .fmt("No. of random splits", fint(x$forest$parms$nsplit)))
   }

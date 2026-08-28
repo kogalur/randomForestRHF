@@ -5,6 +5,7 @@ void updateEnsemble (char mode, uint treeID);
 void updateEnsembleGrow(char mode, uint treeID);
 void updateEnsemblePred(char mode, uint treeID);
 void normalizeEnsembleEstimates(char mode);
+void populateEnsembleIds(char mode);
 void summarizeFaithfulBlockPerformance (char        mode,
                                         uint        b,
                                         uint        blockID,
@@ -24,9 +25,7 @@ void getPerformance(uint      serialTreeID,
                     double  **perfCLSptr,
                     double   *perfRGRptr);
 char getPerfFlag (char mode, uint serialTreeID);
-void calculateRisk(char mode);
-void calculateRiskLegacy(char mode);
-void calculateRiskExtended(char mode);
-void calculateRiskCore(char mode, char wMode);
+void calculateRiskCore(char mode, char wMode, uint trimIndex, char coeOOBRiskPrecomputed);
 void calculateRiskRaw(char mode);
+void finalizePathDomainOutputs(char mode);
 #endif

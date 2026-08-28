@@ -84,8 +84,10 @@ auct.rhf(
   \item{bootstrap.rep}{Number of bootstrap replicates for standard errors. Default is \code{0} (no bootstrap).}
 
   \item{bootstrap.refit}{Logical. If \code{FALSE} (default), uses a subject-level pairs bootstrap with the
-  fitted marker held fixed ("plug-in"). If \code{TRUE}, performs a \emph{full refit} at each replicate,
-  using the original RHF tuning parameters.}
+  fitted marker held fixed ("plug-in"). If \code{TRUE}, performs a \emph{full refit} at each replicate.
+  Complete counting-process histories are resampled by subject with multiplicity, and each sampled copy
+  receives a new bootstrap ID. Refit models use the original RHF tuning parameters and inherit the saved
+  hazard/CHF settings from \code{object$forest$parms$hazard.config}.}
 
   \item{bootstrap.conf}{Confidence level for pointwise normal bands on AUC(t) when \code{bootstrap.rep > 0}
     (e.g., \code{0.95}). Set to \code{NA} to suppress bands.}
@@ -141,10 +143,12 @@ When \code{bootstrap.rep > 0}, two modes are available:
 \itemize{
   \item \emph{Plug-in} (\code{bootstrap.refit = FALSE}): subject-level pairs bootstrap holding the fitted marker matrix fixed.
         Weights the within-time AUC(t) using resampled multiplicities and recomputes Uno's time weights via a weighted KM.
-  \item \emph{Refit} (\code{bootstrap.refit = TRUE}): for each replicate, resample subjects, \emph{refit} the RHF using the original
-        tuning parameters, and re-evaluate AUC(t). The returned per-time SEs are matched to the original
+  \item \emph{Refit} (\code{bootstrap.refit = TRUE}): for each replicate, resample complete subject histories with replacement,
+        retaining repeated draws as separate bootstrap subjects, \emph{refit} the RHF using the original tuning parameters and
+        saved hazard/CHF configuration, and re-evaluate AUC(t). The returned per-time SEs are matched to the original
         evaluation grid. For predict objects, the refit is performed using the data carried in the object; predictions are then
-        recomputed for those data. This is computationally heavier but captures variability from model fitting.
+        recomputed for those data. This is computationally heavier but captures variability from model fitting. If every refit
+        fails, the function reports the first captured failure rather than silently returning an all-\code{NA} bootstrap result.
 }
 The \code{plot} method draws a base-R shaded band for AUC(t) when bootstrap SEs are present.
 }

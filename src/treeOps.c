@@ -65,6 +65,9 @@ void acquireTree(char mode, uint treeID) {
   RF_nodeMembership[treeID] = (NodeBase **) new_vvector(1, nSize, NRUTIL_NPTR);
   RF_tTermMembership[treeID] = (TerminalBase **) new_vvector(1, nSize, NRUTIL_TPTR);
   RF_leafLinkedObjHead[treeID] = RF_leafLinkedObjTail[treeID] = makeLeafLinkedObj();
+  for (i = 1; i <= nSize; i++) {
+    RF_tTermMembership[treeID][i] = NULL;
+  }
   root = makeNode(xSize);
   root -> nSize = nSize;
   rootBase = (NodeBase *) root;
@@ -190,6 +193,22 @@ void acquireTree(char mode, uint treeID) {
       RF_tTermList[treeID] = (TerminalBase **) new_vvector(1, RF_tLeafCount[treeID], NRUTIL_TPTR);
       restoreTreeLOT(treeID, root, SG_offsetTree);
       restoreTNQualitativeObjectsInput(mode, treeID, NULL, NULL, NULL, NULL, NULL, NULL);
+      for (k = 1; k <= RF_tLeafCount[treeID]; k++) {
+        termBase = RF_tTermList[treeID][k];
+        Terminal *tTerm = (Terminal *) termBase;
+        for (i = 1; i <= tTerm -> ibgMembrCount; i++) {
+          RF_tTermMembership[treeID][tTerm -> ibgMembrIndx[i]] = termBase;
+          if ((mode == RF_REST) && (RF_optHigh & OPT_MEMB_USER)) {
+            SG_MEMB_ID_ptr[treeID][tTerm -> ibgMembrIndx[i]] = termBase -> nodeID;
+          }
+        }
+        for (i = 1; i <= tTerm -> oobMembrCount; i++) {
+          RF_tTermMembership[treeID][tTerm -> oobMembrIndx[i]] = termBase;
+          if ((mode == RF_REST) && (RF_optHigh & OPT_MEMB_USER)) {
+            SG_MEMB_ID_ptr[treeID][tTerm -> oobMembrIndx[i]] = termBase -> nodeID;
+          }
+        }
+      }
       for (k = 1; k <= RF_tLeafCount[treeID]; k++) {
         termBase = RF_tTermList[treeID][k];
         assignAllTerminalNodeOutcomes(RF_REST, treeID, termBase);
@@ -624,7 +643,6 @@ void restoreTreeLOT(uint treeID, Node *parent, ulong *offsetTree) {
   NodeBase *parentBase;
   SplitInfoMax *info;
   ulong *offset;
-  uint i;
   offset = & offsetTree[treeID];
   if (treeID != SG_treeID_[*offset]) {
     RF_nativeError("\nRF-SRC:  Diagnostic Trace of Tree Record:  \n");
@@ -673,14 +691,6 @@ void restoreTreeLOT(uint treeID, Node *parent, ulong *offsetTree) {
                      0,      
                      NULL,   
                      NULL);  
-    if (RF_optHigh & OPT_MEMB_USER) {
-      for (i = 1; i <= termPtr -> ibgMembrCount; i++) {
-        SG_MEMB_ID_ptr[treeID][termPtr -> ibgMembrIndx[i]] = parentBase -> nodeID;
-      }
-      for (i = 1; i <= termPtr -> oobMembrCount; i++) {
-        SG_MEMB_ID_ptr[treeID][termPtr -> oobMembrIndx[i]] = parentBase -> nodeID;
-      }
-    }
     parentBase -> mate = termBasePtr;
     termBasePtr -> mate = parentBase;
     RF_leafLinkedObjTail[treeID] -> nodeID = (RF_leafLinkedObjTail[treeID] -> termPtr) -> nodeID = parentBase -> nodeID;
@@ -754,8 +764,11 @@ void getTestMembershipLOT(uint treeID, Node *parent) {
     termPtr = (Terminal *) termBasePtr;
     termPtr -> tstMembrCount = parent -> tstMembrSize;
     termPtr -> tstMembrIndx = uivector(1, termPtr -> tstMembrCount);
-    for (i = 1; i <= termPtr -> tstMembrCount; i++) {
-      termPtr -> tstMembrIndx[i] = parent -> tstMembrIndx[i];
+     for (i = 1; i <= termPtr -> tstMembrCount; i++) {
+       termPtr -> tstMembrIndx[i] = parent -> tstMembrIndx[i];
+      if (RF_optHigh & OPT_MEMB_USER) {
+        SG_MEMB_ID_ptr[treeID][termPtr -> tstMembrIndx[i]] = parentBase -> nodeID;
+      }
     }
   }
   if (parent -> splitInfoDerived != NULL) {

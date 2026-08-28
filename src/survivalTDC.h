@@ -14,6 +14,7 @@ void getTailCorrections(uint treeID, TerminalSurvival *parent);
 void getPseudoHazard2(uint treeID, TerminalSurvival *parent);
 void getNelsonAalenSmooth(uint treeID, TerminalSurvival *parent);
 void getRatio(uint treeID, TerminalSurvival *parent);
+void getCOEObjects(uint treeID, TerminalSurvival *parent);
 void mapLocalToTimeInterest(uint treeID,
                             TerminalSurvival *parent,
                             double *genericLocal,

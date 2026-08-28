@@ -43,11 +43,15 @@ SEXP entryGrow(SEXP traceFlag,
                SEXP xWeight,
                SEXP augmxInfo,
                SEXP perfBlock,
+               SEXP coeTrim,
                SEXP numThreads) {
   char mode;
   char result;
   result = TRUE;
-  clock_t cpuTimeStart = clock();
+  struct timespec start;
+  struct timespec end;
+  double elapsed;
+  clock_gettime(CLOCK_MONOTONIC, &start);
   setUserTraceFlag(INTEGER(traceFlag)[0]);
   setNativeGlobalEnv(&RF_nativeIndex, &RF_stackCount);
   int seedValue           = INTEGER(seedPtr)[0];
@@ -197,6 +201,14 @@ SEXP entryGrow(SEXP traceFlag,
     }
   }
   RF_perfBlock            = INTEGER(perfBlock)[0];
+  SG_coeTrimSize          = (uint) XLENGTH(coeTrim);
+  if (SG_coeTrimSize < 1) {
+    RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+    RF_nativeError("\nRF-SRC:  coe.trim must contain at least one value.");
+    RF_nativeExit();
+  }
+  SG_coeTrim              = REAL(coeTrim);  SG_coeTrim --;
+  SG_coeTrimIndex         = 1;
   RF_numThreads           = INTEGER(numThreads)[0];
   mode = processDefaultGrow();
   if (result) {
@@ -214,12 +226,16 @@ SEXP entryGrow(SEXP traceFlag,
     RF_nativeExit();
   }
   if (result && (RF_stackCount > 0)) {
-    SG_cpuTime_[1] = (double) (clock() - cpuTimeStart) / CLOCKS_PER_SEC;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed = (double) (end.tv_sec - start.tv_sec)
+      + (double) (end.tv_nsec - start.tv_nsec) * 1e-9;
+    SG_cpuTime_[1] = elapsed;
     R_ReleaseObject(RF_sexpVector[RF_OUTP_ID]);
     R_ReleaseObject(RF_sexpVector[RF_STRG_ID]);
     return RF_sexpVector[RF_OUTP_ID];
   }
   else {
+    SG_cpuTime_[1] = 0;    
     return NULL;
   }
 }
@@ -237,6 +253,7 @@ SEXP entryPred(SEXP traceFlag,
                SEXP yInfo,
                SEXP yLevels,
                SEXP yData,
+               SEXP timeInterest,
                SEXP xInfo,
                SEXP xLevels,
                SEXP xData,
@@ -261,12 +278,17 @@ SEXP entryPred(SEXP traceFlag,
                SEXP ombrID,
                SEXP getTree,
                SEXP perfBlock,
+               SEXP coeTrim,
+               SEXP coeTrimIndex,
                SEXP realTimeOpt,
                SEXP numThreads) {
   char mode;
   char result;
   result = TRUE;
-  clock_t cpuTimeStart = clock();
+  struct timespec start;
+  struct timespec end;
+  double elapsed;
+  clock_gettime(CLOCK_MONOTONIC, &start);
   setUserTraceFlag(INTEGER(traceFlag)[0]);
   setNativeGlobalEnv(&RF_nativeIndex, &RF_stackCount);
   int seedValue           = INTEGER(seedPtr)[0];
@@ -341,6 +363,12 @@ SEXP entryPred(SEXP traceFlag,
   }
   else {
     RF_responseIn = NULL;
+  }
+  RF_timeInterest = NULL;
+  RF_timeInterestSize = INTEGER(VECTOR_ELT(timeInterest, 0))[0];
+  if (RF_timeInterestSize > 0) {
+    RF_timeInterest = (double *) REAL(VECTOR_ELT(timeInterest, 1));
+    RF_timeInterest --;
   }
   RF_xSize                 = INTEGER(VECTOR_ELT(xInfo, 0))[0];
   if(VECTOR_ELT(xInfo, 1) != R_NilValue) {
@@ -419,8 +447,23 @@ SEXP entryPred(SEXP traceFlag,
   SG_imbrTNodeCT_ = (uint *) INTEGER(imbrCT); SG_imbrTNodeCT_ --;
   SG_ombrTNodeCT_ = (uint *) INTEGER(ombrCT); SG_ombrTNodeCT_ --;
   SG_rmbrTNodeID_ = (uint *) INTEGER(rmbrID); SG_rmbrTNodeID_ --;
+  SG_imbrTNodeID_ = (uint *) INTEGER(imbrID); SG_imbrTNodeID_ --;
   SG_ombrTNodeID_ = (uint *) INTEGER(ombrID); SG_ombrTNodeID_ --;
   RF_perfBlock            = INTEGER(perfBlock)[0];
+  SG_coeTrimSize          = (uint) XLENGTH(coeTrim);
+  if (SG_coeTrimSize < 1) {
+    RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+    RF_nativeError("\nRF-SRC:  coe.trim must contain at least one value.");
+    RF_nativeExit();
+  }
+  SG_coeTrim              = REAL(coeTrim);  SG_coeTrim --;
+  SG_coeTrimIndex         = (uint) INTEGER(coeTrimIndex)[0];
+  if ( (SG_coeTrimIndex > SG_coeTrimSize) ||
+       ((SG_coeTrimIndex == 0) && ((SG_optLocal & SG_OPT_SWTCH_FIVE) == 0)) ) {
+    RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+    RF_nativeError("\nRF-SRC:  Invalid selected coe.trim index:  %10d", SG_coeTrimIndex);
+    RF_nativeExit();
+  }
   RF_getTree = (uint *) INTEGER(getTree);  RF_getTree --;
   RF_numThreads           = INTEGER(numThreads)[0];
   SG_tcpPort = 0;
@@ -453,12 +496,16 @@ SEXP entryPred(SEXP traceFlag,
     RF_nativeExit();
   }
   if (result && (RF_stackCount > 0)) {
-    SG_cpuTime_[1] = (double) (clock() - cpuTimeStart) / CLOCKS_PER_SEC;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    elapsed = (double) (end.tv_sec - start.tv_sec)
+      + (double) (end.tv_nsec - start.tv_nsec) * 1e-9;
+    SG_cpuTime_[1] = elapsed;
     R_ReleaseObject(RF_sexpVector[RF_OUTP_ID]);
     R_ReleaseObject(RF_sexpVector[RF_STRG_ID]);
     return RF_sexpVector[RF_OUTP_ID];
   }
   else {
+    SG_cpuTime_[1] = 0;
     return NULL;
   }
 }

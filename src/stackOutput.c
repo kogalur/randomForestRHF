@@ -21,6 +21,7 @@ void stackDefinedOutputObjects(char mode) {
   uint  sexpIdentity;
   uint localSize;
   uint  subjSize, obsSize;
+  uint  membershipObsSize;
   double **ensembleDen;
   double   **ensembleKHZ;
   double  ***ensembleKHZptr;
@@ -31,6 +32,10 @@ void stackDefinedOutputObjects(char mode) {
   double   **ensembleHRW;
   double  ***ensembleHRWptr;
   double  ***ensembleHRWnum;
+  double    **coeHazardTree;
+  double  ****coeHazardTreePtr;
+  double    **coeCHFTree;
+  double  ****coeCHFTreePtr;
   double   **riskPtr;
   double   **riskRawPtr;
   double   **integralHazardPtr;
@@ -45,6 +50,15 @@ void stackDefinedOutputObjects(char mode) {
       RF_stackCount += 4;
       RF_stackCount += 2;
       RF_stackCount += 2;
+      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+        RF_stackCount += 4;
+        if ((RF_opt & OPT_IENS) || (RF_opt & OPT_FENS)) {
+          RF_stackCount += 2;
+        }
+        if (RF_opt & OPT_OENS) {
+          RF_stackCount += 2;
+        }
+      }
       RF_stackCount += 2;          
       RF_stackCount += 2;
     }
@@ -81,6 +95,12 @@ void stackDefinedOutputObjects(char mode) {
     }
     if (RF_optHigh & OPT_TERM_OUTG) {
       RF_stackCount += 2; 
+      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+        RF_stackCount += 4;
+        if (RF_opt & OPT_FENS) {
+          RF_stackCount += 2;
+        }
+      }
       if (RF_frSize > 0) {
         RF_stackCount += 2;
       }
@@ -92,6 +112,12 @@ void stackDefinedOutputObjects(char mode) {
       RF_stackCount += 1;
       RF_stackCount += 2;
       RF_stackCount += 1; 
+    }
+  }
+  if (SG_optLocal & SG_OPT_SWTCH_FIVE) {
+    RF_stackCount += 1;  
+    if ((mode != RF_PRED) && (RF_opt & OPT_OENS)) {
+      RF_stackCount += 1;  
     }
   }
   if (RF_optHigh & OPT_MEMB_USER) {
@@ -178,6 +204,10 @@ void stackDefinedOutputObjects(char mode) {
       ensembleHRW    = NULL;
       ensembleHRWptr = NULL;
       ensembleHRWnum = NULL;
+      coeHazardTree    = NULL;
+      coeHazardTreePtr = NULL;
+      coeCHFTree       = NULL;
+      coeCHFTreePtr    = NULL;
       if (oobFlag == TRUE) {
         ensembleDen     = &RF_oobEnsembleDen;
         ensembleKHZ    = &SG_oobEnsembleKHZ_;
@@ -189,6 +219,10 @@ void stackDefinedOutputObjects(char mode) {
         ensembleHRW    = &SG_oobEnsembleHRW_;
         ensembleHRWptr = &SG_oobEnsembleHRWptr;
         ensembleHRWnum = &SG_oobEnsembleHRWnum;
+        coeHazardTree    = &SG_coeHazardTreeOOB_;
+        coeHazardTreePtr = &SG_coeHazardTreeOOB_ptr;
+        coeCHFTree       = &SG_coeCHFTreeOOB_;
+        coeCHFTreePtr    = &SG_coeCHFTreeOOB_ptr;
         riskPtr         = &SG_oobRisk_;
         riskRawPtr      = &SG_oobRiskRaw_;                
         integralHazardPtr = &SG_oobWCase_;
@@ -204,6 +238,10 @@ void stackDefinedOutputObjects(char mode) {
         ensembleHRW    = &SG_fullEnsembleHRW_;
         ensembleHRWptr = &SG_fullEnsembleHRWptr;
         ensembleHRWnum = &SG_fullEnsembleHRWnum;
+        coeHazardTree    = &SG_coeHazardTreeIBG_;
+        coeHazardTreePtr = &SG_coeHazardTreeIBG_ptr;
+        coeCHFTree       = &SG_coeCHFTreeIBG_;
+        coeCHFTreePtr    = &SG_coeCHFTreeIBG_ptr;
         riskPtr         = &SG_fullRisk_;
         riskRawPtr      = &SG_fullRiskRaw_;
         integralHazardPtr = &SG_fullWCase_;
@@ -317,6 +355,38 @@ void stackDefinedOutputObjects(char mode) {
                                                        1,
                                                        localSize);
       (*integralHazardPtr) --;
+      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+        (oobFlag == TRUE) ? (sexpIdentity = SG_COE_HAZR_TREE_OOB) : ((fullFlag == TRUE) ? sexpIdentity = SG_COE_HAZR_TREE_IBG : 0);
+        localSize = RF_ntree * RF_sortedTimeInterestSize * subjSize;
+        *coeHazardTree = (double*) stackAndProtect(RF_auxDimConsts,
+                                                   mode,
+                                                   &RF_nativeIndex,
+                                                   NATIVE_TYPE_NUMERIC,
+                                                   sexpIdentity,
+                                                   localSize,
+                                                   RF_nativeNaN,
+                                                   SG_sexpStringOutgoing,
+                                                   coeHazardTreePtr,
+                                                   3,
+                                                   RF_ntree,
+                                                   RF_sortedTimeInterestSize,
+                                                   subjSize);
+        (oobFlag == TRUE) ? (sexpIdentity = SG_COE_CHF_TREE_OOB) : ((fullFlag == TRUE) ? sexpIdentity = SG_COE_CHF_TREE_IBG : 0);
+        localSize = RF_ntree * RF_sortedTimeInterestSize * subjSize;
+        *coeCHFTree = (double*) stackAndProtect(RF_auxDimConsts,
+                                                mode,
+                                                &RF_nativeIndex,
+                                                NATIVE_TYPE_NUMERIC,
+                                                sexpIdentity,
+                                                localSize,
+                                                RF_nativeNaN,
+                                                SG_sexpStringOutgoing,
+                                                coeCHFTreePtr,
+                                                3,
+                                                RF_ntree,
+                                                RF_sortedTimeInterestSize,
+                                                subjSize);
+      }
       if (oobFlag == TRUE) {
         oobFlag = FALSE;
       }
@@ -409,6 +479,39 @@ void stackDefinedOutputObjects(char mode) {
       }
     }
   }
+  SG_coeTrimIndex_ = NULL;
+  SG_coeTrimRiskOOB_ = NULL;
+  if (SG_optLocal & SG_OPT_SWTCH_FIVE) {
+    SG_coeTrimIndex_ = (uint *) stackAndProtect(
+      RF_auxDimConsts,
+      mode,
+      &RF_nativeIndex,
+      NATIVE_TYPE_INTEGER,
+      SG_COE_TRIM_INDEX,
+      1,
+      0,
+      SG_sexpStringOutgoing,
+      NULL,
+      1,
+      1);
+    SG_coeTrimIndex_ --;
+    SG_coeTrimIndex_[1] = SG_coeTrimIndex;
+    if ((mode != RF_PRED) && (RF_opt & OPT_OENS)) {
+      SG_coeTrimRiskOOB_ = (double *) stackAndProtect(
+        RF_auxDimConsts,
+        mode,
+        &RF_nativeIndex,
+        NATIVE_TYPE_NUMERIC,
+        SG_COE_TRIM_RISK_OOB,
+        SG_coeTrimSize,
+        RF_nativeNaN,
+        SG_sexpStringOutgoing,
+        NULL,
+        1,
+        SG_coeTrimSize);
+      SG_coeTrimRiskOOB_ --;
+    }
+  }
   if (RF_opt & OPT_LEAF) {
     localSize = RF_ntree;
     RF_tLeafCount_ = (uint*) stackAndProtect(RF_auxDimConsts,
@@ -473,8 +576,9 @@ void stackDefinedOutputObjects(char mode) {
     SG_oob_tree_risk_raw_  = (double*) stackAndProtect(RF_auxDimConsts, mode, &RF_nativeIndex, NATIVE_TYPE_NUMERIC, SG_TREE_RISK_RAW_OOB, localSize, RF_nativeNaN, SG_sexpStringOutgoing, &SG_oob_tree_risk_raw_ptr, 2, RF_ntree, SG_lotSize);
   }
   if (RF_optHigh & OPT_MEMB_USER) {
-    localSize = RF_ntree * RF_observationSize;
-    SG_MEMB_ID_ = (uint*) stackAndProtect(RF_auxDimConsts, mode, &RF_nativeIndex, NATIVE_TYPE_INTEGER, SG_MEMB_ID, localSize, 0, SG_sexpStringOutgoing, &SG_MEMB_ID_ptr, 2, RF_ntree, RF_observationSize);
+    membershipObsSize = (mode == RF_PRED) ? RF_fobservationSize : RF_observationSize;
+    localSize = RF_ntree * membershipObsSize;
+    SG_MEMB_ID_ = (uint*) stackAndProtect(RF_auxDimConsts, mode, &RF_nativeIndex, NATIVE_TYPE_INTEGER, SG_MEMB_ID, localSize, 0, SG_sexpStringOutgoing, &SG_MEMB_ID_ptr, 2, RF_ntree, membershipObsSize);
     localSize = RF_ntree * RF_subjCount;
     SG_BOOT_CT_ = (uint*) stackAndProtect(RF_auxDimConsts, mode, &RF_nativeIndex, NATIVE_TYPE_INTEGER, SG_BOOT_CT, localSize, 0, SG_sexpStringOutgoing, &SG_BOOT_CT_ptr, 2, RF_ntree, RF_subjCount);
   }
@@ -678,12 +782,8 @@ void stackForestObjectsOutput(char mode) {
   uint totalNodeCount;
   uint totalMWCPCount;
   uint treeID;
-  RF_totalNodeCount = 0;
-  RF_totalTermCount = 0;
   totalMWCPCount = 0;
   for (treeID = 1; treeID <= RF_ntree; treeID++) {
-    RF_totalNodeCount += RF_nodeCount[treeID];
-    RF_totalTermCount += RF_tLeafCount[treeID];
     totalMWCPCount += SG_mwcpCT_ptr[treeID];
   }
   totalNodeCount = RF_totalNodeCount;

@@ -154,34 +154,26 @@ char virtuallySplitNodeTDC (uint       treeID,
               u2 -= (RF_responseIn[RF_timeIndex][repMembrIndx[indxx[k]]] - RF_responseIn[RF_startTimeIndex][repMembrIndx[indxx[k]]]);              
             }
           }
-          c1 = 0.0;
-          if (fabs(u1) < EPSILON2) {
-            RF_nativeError("\nRF-SRC:  *** ERROR *** ");
-            RF_nativeError("\nRF-SRC:  Entropy calculation in split statistic encountered zero value for U1.");
-            RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
-            RF_nativeExit();
-          }
-          if (v1 > 0.0) {
-            c1 = log((1.0 + v1) / u1);
-          }
-          rn1 = v1 * c1;
-          c2 = 0.0;
-          if (fabs(u2) < EPSILON2) {
-            RF_nativeError("\nRF-SRC:  *** ERROR *** ");
-            RF_nativeError("\nRF-SRC:  Entropy calculation in split statistic encountered zero value for U2.");
-            RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
-            RF_nativeExit();
-          }
-          if (v2 > 0.0) {
-            c2 = log((1.0 + v2) / u2);
-          }
-          rn2 = v2 * c2;
-          if ((rn1 == 0) || (rn2 == 0)) {
-            delta = 0;
+          if ( (fabs(u1) < EPSILON2) || (fabs(u2) < EPSILON2) ) {
             delta = RF_nativeNaN;
           }
           else {
-            delta = rn1 + rn2;
+            c1 = 0.0;
+            if (v1 > 0.0) {
+              c1 = log((1.0 + v1) / u1);
+            }
+            rn1 = v1 * c1;
+            c2 = 0.0;
+            if (v2 > 0.0) {
+              c2 = log((1.0 + v2) / u2);
+            }
+            rn2 = v2 * c2;
+            if ((rn1 == 0) || (rn2 == 0)) {
+               delta = RF_nativeNaN;
+            }
+            else {
+              delta = rn1 + rn2;
+            }
           }
         }
         else {

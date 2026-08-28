@@ -12,6 +12,7 @@
 
 #include "processEnsemble.h"
 #include "survivalTDC.h"
+#include "processEnsembleCOE.h"
 #include "terminal.h"
 #include "shared/classification.h"
 #include "shared/regression.h"
@@ -63,7 +64,9 @@ void processEnsembleInSitu(char mode, uint treeID) {
         omp_unset_lock(&RF_lockEnsbUpdtCount);
 #endif
       }
+    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
       normalizeEnsembleEstimates(mode);
+    }
 #ifdef _OPENMP
       omp_unset_lock(&RF_lockPerf);
 #endif
@@ -72,10 +75,20 @@ void processEnsembleInSitu(char mode, uint treeID) {
 }
 void updateEnsemble (char mode, uint treeID) {
   if ((mode == RF_GROW) || (mode == RF_REST)) {
-    updateEnsembleGrow(mode, treeID);
+    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+      updateEnsembleGrow(mode, treeID);
+    }
+    else {
+      updateCOEObjectsGrow(mode, treeID);
+    }
   }
   else {
-    updateEnsemblePred(mode, treeID);
+    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+      updateEnsemblePred(mode, treeID);
+    }
+    else {
+      updateCOEObjectsPred(mode, treeID);
+    }
   }
 }
 void updateEnsembleGrow(char mode, uint treeID) {
@@ -360,17 +373,14 @@ void normalizeEnsembleEstimates(char mode) {
   double **ensembleCHFnum;
   double **ensembleHRWnum;
   double  *ensembleDen;
-  uint    *subjSlot;
   uint obsSize;
   uint i, j;
   oobFlag = fullFlag = FALSE;
   if (mode != RF_PRED) {
     obsSize = RF_subjCount;
-    subjSlot = RF_subjSlot;
   }
   else {
     obsSize = SG_fsubjCount;
-    subjSlot= SG_fsubjSlot;    
   }
   switch (mode) {
   case RF_PRED:
@@ -387,9 +397,6 @@ void normalizeEnsembleEstimates(char mode) {
       fullFlag = TRUE;
     }
     break;
-  }
-  for (i = 1; i <= obsSize; i++) {
-    SG_ensembleID_[i] = subjSlot[i];
   }
   while ((oobFlag == TRUE) || (fullFlag == TRUE)) {
     if (oobFlag == TRUE) {
@@ -547,40 +554,6 @@ static double clipUnitTime(double x) {
   }
   return x;
 }
-static uint firstTimeInterestGreater(double value) {
-  int low, high, mid, result;
-  low = 1;
-  high = (int) RF_sortedTimeInterestSize;
-  result = high + 1;
-  while (low <= high) {
-    mid = low + ((high - low) >> 1);
-    if (RF_timeInterest[mid] > value) {
-      result = mid;
-      high = mid - 1;
-    }
-    else {
-      low = mid + 1;
-    }
-  }
-  return (uint) result;
-}
-static uint firstTimeInterestGreaterOrEqual(double value) {
-  int low, high, mid, result;
-  low = 1;
-  high = (int) RF_sortedTimeInterestSize;
-  result = high + 1;
-  while (low <= high) {
-    mid = low + ((high - low) >> 1);
-    if (RF_timeInterest[mid] >= value) {
-      result = mid;
-      high = mid - 1;
-    }
-    else {
-      low = mid + 1;
-    }
-  }
-  return (uint) result;
-}
 static double getCaseWGridRightUsed(double right) {
   uint idxNext;
   right = clipUnitTime(right);
@@ -718,37 +691,226 @@ static double getCaseW(double **ensembleKHZptr,
     return getCaseWObserved(ensembleKHZptr, subjIndex, left, right);
   }
 }
-void calculateRiskLegacy(char mode) {
-  calculateRiskCore(mode, 1);
+static double getCaseRiskExactOverlap(double **ensembleKHZptr,
+                                      uint     subjIndex,
+                                      double   left,
+                                      double   right) {
+  double result;
+  double gridLeft, gridRight;
+  double overlapLeft, overlapRight;
+  uint idx1, idx2, k;
+  result = 0.0;
+  if (!(left < right)) {
+    return result;
+  }
+  idx1 = firstTimeInterestGreater(left);
+  if (idx1 > RF_sortedTimeInterestSize) {
+    return result;
+  }
+  idx2 = firstTimeInterestGreaterOrEqual(right);
+  if (idx2 > RF_sortedTimeInterestSize) {
+    idx2 = RF_sortedTimeInterestSize;
+  }
+  gridLeft = (idx1 > 1) ? RF_timeInterest[idx1 - 1] : 0.0;
+  for (k = idx1; k <= idx2; k++) {
+    gridRight = RF_timeInterest[k];
+    overlapLeft  = (left  > gridLeft)  ? left  : gridLeft;
+    overlapRight = (right < gridRight) ? right : gridRight;
+    if (overlapRight > overlapLeft) {
+      result += ensembleKHZptr[k][subjIndex] *
+                (overlapRight - overlapLeft);
+    }
+    gridLeft = gridRight;
+  }
+  return result;
 }
-void calculateRisk(char mode) {
-  calculateRiskCore(mode, 2);
+static void finalizePathDomainTarget(uint     subjIndex,
+                                     char    *pathDomain,
+                                     double  *pathOverlap,
+                                     double  *ensembleDen,
+                                     double **ensembleKHZptr,
+                                     double **ensembleCHFptr) {
+  double cumulative;
+  uint k;
+  cumulative = 0.0;
+  if (ensembleDen[subjIndex] > 0) {
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      if (pathOverlap[k] > 0.0) {
+        cumulative +=
+          ensembleKHZptr[k][subjIndex] * pathOverlap[k];
+      }
+      ensembleCHFptr[k][subjIndex] = cumulative;
+    }
+  }
+  else {
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      ensembleCHFptr[k][subjIndex] = RF_nativeNaN;
+    }
+  }
+  for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+    if (pathDomain[k] == FALSE) {
+      ensembleKHZptr[k][subjIndex] = RF_nativeNaN;
+    }
+  }
 }
-void calculateRiskExtended(char mode) {
-  calculateRiskCore(mode, 3);
+void finalizePathDomainOutputs(char mode) {
+  char fullFlag;
+  char oobFlag;
+  char *pathDomain;
+  double **responseIn;
+  double *pathOverlap;
+  double caseLeft;
+  double caseRight;
+  double gridLeft;
+  double gridRight;
+  double overlapLeft;
+  double overlapRight;
+  double cellWidth;
+  uint caseID;
+  uint i;
+  uint j;
+  uint k;
+  uint idx1;
+  uint idx2;
+  uint pointEnd;
+  uint subjCount;
+  uint *subjSlotCount;
+  uint **subjList;
+  fullFlag = FALSE;
+  oobFlag = FALSE;
+  switch (mode) {
+  case RF_PRED:
+    if ((RF_fresponseIn == NULL) || !(RF_opt & OPT_FENS)) {
+      return;
+    }
+    fullFlag = TRUE;
+    responseIn = RF_fresponseIn;
+    subjCount = SG_fsubjCount;
+    subjSlotCount = SG_fsubjSlotCount;
+    subjList = SG_fsubjList;
+    break;
+  case RF_GROW:
+  case RF_REST:
+    fullFlag = ((RF_opt & OPT_IENS) != 0);
+    oobFlag = ((RF_opt & OPT_OENS) != 0);
+    responseIn = RF_responseIn;
+    subjCount = RF_subjCount;
+    subjSlotCount = RF_subjSlotCount;
+    subjList = RF_subjList;
+    break;
+  default:
+    return;
+  }
+  if ((fullFlag == FALSE) && (oobFlag == FALSE)) {
+    return;
+  }
+  pathDomain = cvector(1, RF_sortedTimeInterestSize);
+  pathOverlap = dvector(1, RF_sortedTimeInterestSize);
+  for (i = 1; i <= subjCount; i++) {
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      pathDomain[k] = FALSE;
+      pathOverlap[k] = 0.0;
+    }
+    for (j = 1; j <= subjSlotCount[i]; j++) {
+      caseID = subjList[i][j];
+      caseLeft = responseIn[RF_startTimeIndex][caseID];
+      caseRight = responseIn[RF_timeIndex][caseID];
+      if (!(caseLeft < caseRight)) {
+        continue;
+      }
+      idx1 = firstTimeInterestGreater(caseLeft);
+      pointEnd = firstTimeInterestGreater(caseRight);
+      if ((idx1 <= RF_sortedTimeInterestSize) &&
+          (pointEnd > idx1)) {
+        idx2 = pointEnd - 1;
+        if (idx2 > RF_sortedTimeInterestSize) {
+          idx2 = RF_sortedTimeInterestSize;
+        }
+        for (k = idx1; k <= idx2; k++) {
+          pathDomain[k] = TRUE;
+        }
+      }
+      if (idx1 > RF_sortedTimeInterestSize) {
+        continue;
+      }
+      idx2 = firstTimeInterestGreaterOrEqual(caseRight);
+      if (idx2 > RF_sortedTimeInterestSize) {
+        idx2 = RF_sortedTimeInterestSize;
+      }
+      gridLeft = (idx1 > 1) ? RF_timeInterest[idx1 - 1] : 0.0;
+      for (k = idx1; k <= idx2; k++) {
+        gridRight = RF_timeInterest[k];
+        overlapLeft = (caseLeft > gridLeft) ? caseLeft : gridLeft;
+        overlapRight = (caseRight < gridRight) ? caseRight : gridRight;
+        if (overlapRight > overlapLeft) {
+          pathOverlap[k] += overlapRight - overlapLeft;
+        }
+        gridLeft = gridRight;
+      }
+    }
+    gridLeft = 0.0;
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      gridRight = RF_timeInterest[k];
+      cellWidth = gridRight - gridLeft;
+      if (pathOverlap[k] > cellWidth) {
+        pathOverlap[k] = cellWidth;
+      }
+      gridLeft = gridRight;
+    }
+    if (fullFlag == TRUE) {
+      finalizePathDomainTarget(i,
+                               pathDomain,
+                               pathOverlap,
+                               RF_fullEnsembleDen,
+                               SG_fullEnsembleKHZptr,
+                               SG_fullEnsembleCHFptr);
+    }
+    if (oobFlag == TRUE) {
+      finalizePathDomainTarget(i,
+                               pathDomain,
+                               pathOverlap,
+                               RF_oobEnsembleDen,
+                               SG_oobEnsembleKHZptr,
+                               SG_oobEnsembleCHFptr);
+    }
+  }
+  free_cvector(pathDomain, 1, RF_sortedTimeInterestSize);
+  free_dvector(pathOverlap, 1, RF_sortedTimeInterestSize);
 }
-void calculateRiskCore(char mode, char wMode) {
+void calculateRiskCore(char mode, char wMode, uint trimIndex, char coeOOBRiskPrecomputed) {
   double **ensembleKHZptr;
   double  *ensembleDen;
   double  *riskPtr;
   double  *wCasePtr;
   double   caseWRisk;
+  double  *coeTreeValue;
+  uint    *coeOOBTreeIndex;
   double unscaledRiskPartI, unscaledRiskPartII, unscaledRiskTotal;
   double caseLeft, caseRight, caseRightExtended;
-  double delta;
   uint caseID;
   char oobFlag, fullFlag;
-  uint idx1, idxk;
-  uint i, j, k;
+  char coeFlag;
+  uint i, j;
   uint     subjCount;
   double **responseIn;
   uint    *subjTailCaseMap;
   uint    *timeInterestSubjTailIndex;
   uint    *subjSlotCount;
   uint   **subjList;
-  uint   **timeInterestIntervalIndex;
-  uint    *timeInterestIntervalCount;
   oobFlag = fullFlag = FALSE;
+  coeFlag = ((SG_optLocal &
+              (SG_OPT_SWTCH_FOUR |
+               SG_OPT_SWTCH_FIVE |
+               SG_OPT_SWTCH_SIX)) != 0);
+  coeTreeValue = NULL;
+  coeOOBTreeIndex = NULL;
+  if ((coeFlag == TRUE) &&
+      (mode != RF_PRED) &&
+      (RF_opt & OPT_OENS) &&
+      (coeOOBRiskPrecomputed == FALSE)) {
+    coeTreeValue = dvector(1, RF_getTreeCount);
+    coeOOBTreeIndex = uivector(1, RF_getTreeCount);
+  }
   switch (mode) {
   case RF_PRED:
     if (RF_opt & OPT_FENS) {
@@ -760,8 +922,6 @@ void calculateRiskCore(char mode, char wMode) {
     timeInterestSubjTailIndex = SG_ftimeInterestSubjTailIndex;
     subjSlotCount   = SG_fsubjSlotCount;
     subjList = SG_fsubjList;
-    timeInterestIntervalIndex  = SG_ftimeInterestIntervalIndex;
-    timeInterestIntervalCount  = SG_ftimeInterestIntervalCount;
     break;
   default:
     if (RF_opt & OPT_OENS) {
@@ -776,8 +936,6 @@ void calculateRiskCore(char mode, char wMode) {
     timeInterestSubjTailIndex = SG_timeInterestSubjTailIndex;
     subjSlotCount   = RF_subjSlotCount;
     subjList = RF_subjList;
-    timeInterestIntervalIndex  = SG_timeInterestIntervalIndex;    
-    timeInterestIntervalCount  = SG_timeInterestIntervalCount;
     break;
   }
   for (i = 1; i <= subjCount; i++) {
@@ -814,7 +972,21 @@ void calculateRiskCore(char mode, char wMode) {
     unscaledRiskTotal = 0;
     for (i = 1; i <= subjCount; i++) {
       if (ensembleDen[i] > 0) {
-        if (responseIn[RF_statusIndex][subjTailCaseMap[i]] == 1) {
+        if ((oobFlag == TRUE) && (coeFlag == TRUE)) {
+          unscaledRiskPartI = 0.0;
+          unscaledRiskPartII = 0.0;
+          if (coeOOBRiskPrecomputed == TRUE) {
+            unscaledRiskTotal = riskPtr[i];
+          }
+          else {
+            unscaledRiskTotal =
+              getCOEOOBSubjectRiskExactOverlap(i,
+                                               trimIndex,
+                                               coeOOBTreeIndex,
+                                               coeTreeValue);
+          }
+        }
+        else if (responseIn[RF_statusIndex][subjTailCaseMap[i]] == 1) {
           if (timeInterestSubjTailIndex[i] > 0) {
             if ( (timeInterestSubjTailIndex[i] == RF_sortedTimeInterestSize) ||
                  fabs(RF_timeInterest[timeInterestSubjTailIndex[i]] - responseIn[RF_timeIndex][subjTailCaseMap[i]]) < EPSILON2 ) {
@@ -833,29 +1005,20 @@ void calculateRiskCore(char mode, char wMode) {
         else {
           unscaledRiskPartII = 0.0;
         }
-        unscaledRiskPartI = 0.0;
+        if (!((oobFlag == TRUE) && (coeFlag == TRUE))) {
+          unscaledRiskPartI = 0.0;
+        }
         for (j = 1; j <= subjSlotCount[i]; j++) {
           caseID = subjList[i][j];
-          caseWRisk = 0.0;
-          if (timeInterestIntervalCount[caseID] > 0) {
-            if (timeInterestIntervalIndex[caseID][1] <= timeInterestSubjTailIndex[i]) {
-              idx1 = timeInterestIntervalIndex[caseID][1];
-              delta = RF_timeInterest[ idx1 ] - responseIn[RF_startTimeIndex][caseID];
-              caseWRisk += ensembleKHZptr[idx1][i] * delta;
-              for (k = 2; k <= timeInterestIntervalCount[caseID]; k++) {
-                idxk = timeInterestIntervalIndex[caseID][k];
-                if (idxk <= timeInterestSubjTailIndex[i]) {            
-                  caseWRisk += ensembleKHZptr[idxk][i] * SG_timeInterestDelta[idxk];
-                }
-                else {
-                  break;
-                }
-              }
-            }
-          }
-          unscaledRiskPartI += caseWRisk;
           caseLeft = responseIn[RF_startTimeIndex][caseID];
           caseRight = responseIn[RF_timeIndex][caseID];
+          if (!((oobFlag == TRUE) && (coeFlag == TRUE))) {
+            caseWRisk = getCaseRiskExactOverlap(ensembleKHZptr,
+                                                i,
+                                                caseLeft,
+                                                caseRight);
+            unscaledRiskPartI += caseWRisk;
+          }
           caseRightExtended = caseRight;
           if (wMode == 3) {
             caseRightExtended = getCaseWExtendedRight(responseIn,
@@ -870,7 +1033,9 @@ void calculateRiskCore(char mode, char wMode) {
                                       caseRightExtended,
                                       wMode);
         }          
-        unscaledRiskTotal = unscaledRiskPartI + unscaledRiskPartII;
+        if (!((oobFlag == TRUE) && (coeFlag == TRUE))) {
+          unscaledRiskTotal = unscaledRiskPartI + unscaledRiskPartII;
+        }
       }
       else {
         unscaledRiskTotal = RF_nativeNaN;
@@ -888,6 +1053,12 @@ void calculateRiskCore(char mode, char wMode) {
       fullFlag = FALSE;
     }
   }  
+  if (coeTreeValue != NULL) {
+    free_dvector(coeTreeValue, 1, RF_getTreeCount);
+  }
+  if (coeOOBTreeIndex != NULL) {
+    free_uivector(coeOOBTreeIndex, 1, RF_getTreeCount);
+  }
 }
 void calculateRiskRaw(char mode) {
   double **ensembleHRWptr;
@@ -979,4 +1150,20 @@ void calculateRiskRaw(char mode) {
       fullFlag = FALSE;
     }
   }  
+}
+void populateEnsembleIds(char mode) {
+  uint *subjSlot;
+  uint obsSize;
+  uint i;
+  if (mode != RF_PRED) {
+    obsSize = RF_subjCount;
+    subjSlot = RF_subjSlot;
+  }
+  else {
+    obsSize = SG_fsubjCount;
+    subjSlot= SG_fsubjSlot;    
+  }
+  for (i = 1; i <= obsSize; i++) {
+    SG_ensembleID_[i] = subjSlot[i];
+  }
 }

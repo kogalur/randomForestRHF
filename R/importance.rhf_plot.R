@@ -1,89 +1,117 @@
 dotmatrix.importance.rhf <- function(x,
        vars = NULL,
-       top_n_union = 15L,
+       top.n.union = 15L,
        variable.labels = NULL,
        time.labels = NULL,
-       sort_by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
-       sort_abs = TRUE,
+       sort.by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
+       sort.abs = TRUE,
        transform = c("none", "log10"),
-       color_by = c("value", "sign", "single", "none"),
-       point_color = "steelblue4",
-       value_colors = c("grey85", "steelblue4"),
-       sign_colors = c("firebrick3", "grey90", "steelblue4"),
+       color.by = c("value", "sign", "single", "none"),
+       point.color = "steelblue4",
+       value.colors = c("grey85", "steelblue4"),
+       sign.colors = c("firebrick3", "grey90", "steelblue4"),
+       pch = 16,
        cex.range = c(0.6, 3.2),
        size.cap = 0.99,
        color.cap = 0.99,
        alpha = 0.9,
-       show.grid = TRUE,
+       show.grid = FALSE,
        grid.col = "grey92",
        legend = TRUE,
-       display.note = TRUE,
+       legend.args = list(),
+       display.note = FALSE,
        xlab = "",
        ylab = "",
        main = "RHF time-localized VarPro importance",
        axis.cex = 0.7,
        var.cex = 0.7,
        time.label.srt = 45,
-       save_plot = FALSE,
+       save.plot = FALSE,
        out.file = "rhf_time_varpro_dotmatrix.pdf",
        width = 11,
        height = NULL,
        mar = NULL,
        legend.width = 0.7,
+       point.args = list(),
        ...) {
-  if (!inherits(x, "importance.rhf")) {
-    stop("This function only works for objects of class 'importance.rhf'.")
-  }
-  sort_by <- match.arg(sort_by)
+  dots <- list(...)
+  sort.by <- match.arg(sort.by)
   transform <- match.arg(transform)
-  color_by <- match.arg(color_by)
+  color.by <- match.arg(color.by)
   cex.range <- as.numeric(cex.range)
-  if (length(cex.range) != 2L || any(!is.finite(cex.range)) || any(cex.range < 0)) {
-    stop("cex.range must be a length-2 nonnegative numeric vector.")
+  if (length(cex.range) != 2L || any(!is.finite(cex.range)) ||
+      any(cex.range < 0)) {
+    stop("'cex.range' must be a length-2 nonnegative numeric vector.")
   }
-  mat <- x$importance.matrix
-  if (!is.matrix(mat) || !length(mat)) {
-    stop("No importance values available to plot.")
+  alpha <- as.numeric(alpha)[1L]
+  if (!is.finite(alpha) || alpha < 0 || alpha > 1) {
+    stop("'alpha' must be a numeric value in [0, 1].")
   }
+  legend.width <- as.numeric(legend.width)[1L]
+  if (!is.finite(legend.width) || legend.width <= 0) {
+    stop("'legend.width' must be a positive numeric value.")
+  }
+  .rhf_validate_named_list(point.args, "point.args")
+  plot.data <- .rhf_importance_plot_data(x)
+  mat <- plot.data$mat
   mat <- .rhf_select_dotmatrix_variables(mat = mat,
                                          vars = vars,
-                                         top_n_union = top_n_union,
-                                         sort_abs = sort_abs)
+                                         top.n.union = top.n.union,
+                                         sort.abs = sort.abs)
   var.order <- .rhf_order_dotmatrix_variables(mat = mat,
                                               variable.labels = variable.labels,
-                                              sort_by = sort_by,
-                                              sort_abs = sort_abs)
+                                              sort.by = sort.by,
+                                              sort.abs = sort.abs)
   var.order <- .rhf_unique_in_order(var.order)
   mat <- mat[var.order, , drop = FALSE]
   var.codes <- rownames(mat)
   time.codes <- colnames(mat)
-  time.values <- x$window.info$time
-  var.labels <- .rhf_label_lookup(var.codes, variable.labels, infer_prefix = TRUE)
+  time.values <- plot.data$time.values
+  var.labels <- .rhf_label_lookup(var.codes,
+                                  variable.labels,
+                                  infer_prefix = TRUE)
   var.labels <- .rhf_make_unique_labels(var.labels, var.codes)
-  if (is.null(time.labels)) {
-    x.labels <- .rhf_format_time_labels(time.values)
+  x.labels <- .rhf_resolve_time_labels(time.codes = time.codes,
+                                       time.values = time.values,
+                                       time.labels = time.labels)
+  has.negative <- any(mat[is.finite(mat)] < 0)
+  if (has.negative && color.by != "sign") {
+    warning("Negative importance values are omitted unless 'color.by = \"sign\"'.",
+            call. = FALSE)
   }
-  else {
-    x.labels <- .rhf_label_lookup(time.codes, time.labels, infer_prefix = FALSE)
-  }
-  if (color_by == "sign") {
+  if (color.by == "sign") {
     size.metric <- abs(mat)
     color.metric <- mat
-    size.title <- if (transform == "log10") "log10(|Importance| + 1)" else "|Importance|"
-    color.title <- "Importance"
+    size.title <- if (transform == "log10") {
+      "log10(|Score| + 1)"
+    }
+    else {
+      "|Score|"
+    }
+    color.title <- "Score"
   }
   else {
     size.metric <- pmax(mat, 0)
-    color.metric <- if (color_by == "value") size.metric else NULL
-    size.title <- if (transform == "log10") "log10(Importance + 1)" else "Importance"
+    color.metric <- if (color.by == "value") size.metric else NULL
+    size.title <- if (transform == "log10") {
+      "log10(Score + 1)"
+    }
+    else {
+      "Score"
+    }
     color.title <- size.title
   }
   if (transform == "log10") {
     size.metric <- log10(size.metric + 1)
-    if (color_by == "value") {
+    if (color.by == "value") {
       color.metric <- size.metric
     }
   }
+  legend.options <- .rhf_resolve_matrix_legend_args(
+    legend.args = legend.args,
+    title = size.title,
+    color.title = color.title
+  )
   size.cap.info <- .rhf_cap_values(size.metric,
                                    cap = size.cap,
                                    symmetric = FALSE,
@@ -93,7 +121,7 @@ dotmatrix.importance.rhf <- function(x,
                                 nrow = nrow(mat),
                                 ncol = ncol(mat),
                                 dimnames = dimnames(mat))
-  if (color_by == "value") {
+  if (color.by == "value") {
     color.cap.info <- .rhf_cap_values(color.metric,
                                       cap = color.cap,
                                       symmetric = FALSE,
@@ -104,7 +132,7 @@ dotmatrix.importance.rhf <- function(x,
                                    ncol = ncol(mat),
                                    dimnames = dimnames(mat))
   }
-  else if (color_by == "sign") {
+  else if (color.by == "sign") {
     color.cap.info <- .rhf_cap_values(color.metric,
                                       cap = color.cap,
                                       symmetric = TRUE,
@@ -124,56 +152,75 @@ dotmatrix.importance.rhf <- function(x,
   }
   draw <- is.finite(size.metric.display) & (size.metric.display > 0)
   cex.mat <- matrix(0, nrow = nrow(mat), ncol = ncol(mat))
-  size.range <- if (any(draw)) range(size.metric.display[draw], na.rm = TRUE) else c(0, 1)
+  size.range <- if (any(draw)) {
+    range(size.metric.display[draw], na.rm = TRUE)
+  }
+  else {
+    c(0, 1)
+  }
   if (any(draw)) {
     cex.mat[draw] <- .rhf_rescale_from_range(size.metric.display[draw],
                                              from = size.range,
                                              to = cex.range)
   }
-  if (color_by == "none") {
+  if (color.by == "none") {
     col.mat <- matrix("black", nrow = nrow(mat), ncol = ncol(mat))
   }
-  else if (color_by == "single") {
-    col.mat <- matrix(point_color, nrow = nrow(mat), ncol = ncol(mat))
+  else if (color.by == "single") {
+    col.mat <- matrix(point.color, nrow = nrow(mat), ncol = ncol(mat))
   }
-  else if (color_by == "value") {
+  else if (color.by == "value") {
     col.mat <- matrix(.rhf_map_palette(color.metric.display,
-                                       value_colors,
+                                       value.colors,
                                        symmetric = FALSE),
                       nrow = nrow(mat), ncol = ncol(mat))
   }
   else {
     col.mat <- matrix(.rhf_map_palette(color.metric.display,
-                                       sign_colors,
+                                       sign.colors,
                                        symmetric = TRUE),
                       nrow = nrow(mat), ncol = ncol(mat))
   }
-  col.mat[draw] <- grDevices::adjustcolor(col.mat[draw], alpha.f = alpha)
+  if (any(draw)) {
+    col.mat[draw] <- grDevices::adjustcolor(col.mat[draw], alpha.f = alpha)
+  }
   display.note.text <- NULL
   if (isTRUE(display.note)) {
     if (isTRUE(size.cap.info$applied) &&
         isTRUE(color.cap.info$applied) &&
         identical(size.cap.info$label, color.cap.info$label)) {
-      display.note.text <- paste0("plot size/color capped at ", size.cap.info$label)
+      display.note.text <- paste0("plot size/color capped at ",
+                                  size.cap.info$label)
     }
     else {
       note.parts <- character(0)
       if (isTRUE(size.cap.info$applied)) {
-        note.parts <- c(note.parts, paste0("size capped at ", size.cap.info$label))
+        note.parts <- c(note.parts,
+                        paste0("size capped at ", size.cap.info$label))
       }
       if (isTRUE(color.cap.info$applied)) {
-        note.parts <- c(note.parts, paste0("color capped at ", color.cap.info$label))
+        note.parts <- c(note.parts,
+                        paste0("color capped at ", color.cap.info$label))
       }
       if (length(note.parts)) {
-        display.note.text <- paste0("plot ", paste(note.parts, collapse = "; "))
+        display.note.text <- paste0("plot ",
+                                    paste(note.parts, collapse = "; "))
       }
     }
   }
   if (is.null(height)) {
     height <- max(5.5, 0.22 * nrow(mat) + 1.8)
   }
-  if (isTRUE(save_plot)) {
-    .rhf_open_plot_device(out.file = out.file, width = width, height = height)
+  width <- as.numeric(width)[1L]
+  height <- as.numeric(height)[1L]
+  if (!is.finite(width) || width <= 0 ||
+      !is.finite(height) || height <= 0) {
+    stop("'width' and 'height' must be positive numeric values.")
+  }
+  if (isTRUE(save.plot)) {
+    .rhf_open_plot_device(out.file = out.file,
+                          width = width,
+                          height = height)
     on.exit(grDevices::dev.off(), add = TRUE)
   }
   old.par <- graphics::par(no.readonly = TRUE)
@@ -186,50 +233,76 @@ dotmatrix.importance.rhf <- function(x,
                                       time.label.srt = time.label.srt,
                                       legend = legend)
   }
+  mar <- as.numeric(mar)
+  if (length(mar) != 4L || any(!is.finite(mar)) || any(mar < 0)) {
+    stop("'mar' must be a length-4 nonnegative numeric vector.")
+  }
   if (isTRUE(legend)) {
-    graphics::layout(matrix(c(1, 2), nrow = 1L), widths = c(5.6, legend.width))
+    graphics::layout(matrix(c(1, 2), nrow = 1L),
+                     widths = c(5.6, legend.width))
     on.exit(graphics::layout(1), add = TRUE)
   }
   graphics::par(mar = mar, mgp = c(0.9, 0.12, 0), xpd = NA)
   x.pos <- seq_len(ncol(mat))
   y.pos <- rev(seq_len(nrow(mat)))
-  graphics::plot(NA,
-                 xlim = c(0.5, ncol(mat) + 0.5),
-                 ylim = c(0.5, nrow(mat) + 0.5),
-                 xlab = xlab,
-                 ylab = ylab,
-                 xaxt = "n",
-                 yaxt = "n",
-                 bty = "n",
-                 xaxs = "i",
-                 yaxs = "i",
-                 main = main)
+  matrix.xlim <- c(0.5, ncol(mat) + 0.5)
+  matrix.ylim <- c(0.5, nrow(mat) + 0.5)
+  frame.args <- list(
+    x = NA_real_,
+    xlim = matrix.xlim,
+    ylim = matrix.ylim,
+    xlab = xlab,
+    ylab = ylab,
+    xaxt = "n",
+    yaxt = "n",
+    bty = "n",
+    xaxs = "i",
+    yaxs = "i",
+    main = main
+  )
+  .rhf_graphics_call(graphics::plot,
+                     fixed = frame.args,
+                     extra = dots,
+                     protected = names(frame.args),
+                     arg = "...")
   if (isTRUE(show.grid)) {
-    guide.height <- min(0.16, max(0.07, 0.010 * nrow(mat)))
-    graphics::segments(x0 = x.pos,
-                       y0 = 0.5,
-                       x1 = x.pos,
-                       y1 = pmin(nrow(mat) + 0.5, 0.5 + guide.height),
-                       col = grid.col,
-                       lty = 3)
-    graphics::abline(h = seq_len(nrow(mat)), col = grid.col, lty = 3)
-    graphics::abline(v = seq_len(ncol(mat)), col = grid.col, lty = 3)
+    .rhf_draw_matrix_guides(x.at = x.pos,
+                            y.at = y.pos,
+                            xlim = matrix.xlim,
+                            ylim = matrix.ylim,
+                            col = grid.col,
+                            lty = 3)
   }
-  ## rewrite title over dashed lines
-  graphics::title(main = main)
   if (!is.null(display.note.text) && nzchar(display.note.text)) {
-    graphics::mtext(display.note.text, side = 3, line = 0.30, adj = 1, cex = 0.75)
+    graphics::mtext(display.note.text,
+                    side = 3,
+                    line = 0.30,
+                    adj = 1,
+                    cex = 0.75)
   }
   xx <- rep(x.pos, each = nrow(mat))
   yy <- rep(y.pos, times = ncol(mat))
   keep <- as.vector(draw)
-  graphics::points(xx[keep],
-                   yy[keep],
-                   pch = 16,
-                   cex = as.vector(cex.mat)[keep],
-                   col = as.vector(col.mat)[keep],
-                   ...)
-  graphics::axis(2, at = y.pos, labels = var.labels, las = 1, tick = FALSE, cex.axis = var.cex)
+  if (any(keep)) {
+    point.fixed <- list(
+      x = xx[keep],
+      y = yy[keep],
+      pch = pch,
+      cex = as.vector(cex.mat)[keep],
+      col = as.vector(col.mat)[keep]
+    )
+    .rhf_graphics_call(graphics::points,
+                       fixed = point.fixed,
+                       extra = point.args,
+                       protected = names(point.fixed),
+                       arg = "point.args")
+  }
+  graphics::axis(2,
+                 at = y.pos,
+                 labels = var.labels,
+                 las = 1,
+                 tick = FALSE,
+                 cex.axis = var.cex)
   .rhf_draw_dotmatrix_xlabels(at = x.pos,
                               labels = x.labels,
                               cex = axis.cex,
@@ -240,7 +313,7 @@ dotmatrix.importance.rhf <- function(x,
     graphics::par(mar = c(mar[1L], 0.10, mar[3L], 0.10), xpd = NA)
     size.breaks <- if (any(draw)) {
       .rhf_pretty_breaks(size.metric.display[draw],
-                         n = 10L,
+                         n = 4L,
                          positive.only = TRUE,
                          symmetric = FALSE)
     }
@@ -248,152 +321,179 @@ dotmatrix.importance.rhf <- function(x,
       numeric(0)
     }
     color.range <- NULL
-    if (color_by == "value" && any(draw)) {
+    if (color.by == "value" && any(draw)) {
       color.range <- range(color.metric.display[draw], na.rm = TRUE)
     }
-    if (color_by == "sign") {
+    if (color.by == "sign") {
       finite.color <- color.metric.display[is.finite(color.metric.display)]
       if (length(finite.color)) {
         lim <- max(abs(finite.color), na.rm = TRUE)
-        color.range <- c(-lim, lim)
+        if (is.finite(lim) && lim > 0) {
+          color.range <- c(-lim, lim)
+        }
       }
     }
+    legend.point.color <- if (color.by == "none") "black" else point.color
     .rhf_draw_dotmatrix_legend(size.breaks = size.breaks,
                                size.range = size.range,
-                               size.title = size.title,
+                               size.title = legend.options$title,
                                cex.range = cex.range,
                                alpha = alpha,
-                               color_by = color_by,
+                               color.by = color.by,
                                color.range = color.range,
-                               color.title = color.title,
-                               point_color = point_color,
-                               value_colors = value_colors,
-                               sign_colors = sign_colors)
+                               color.title = legend.options$color.title,
+                               point.color = legend.point.color,
+                               value.colors = value.colors,
+                               sign.colors = sign.colors,
+                               cex.text = legend.options$cex,
+                               cex.title = legend.options$title.cex)
   }
   invisible(list(matrix = mat,
                  variables = var.codes,
+                 labels = var.labels,
                  times = time.values,
+                 time.labels = x.labels,
                  size.metric = size.metric,
                  size.metric.display = size.metric.display,
                  color.metric = color.metric,
                  color.metric.display = color.metric.display,
+                 point.cex = cex.mat,
                  size.cap = size.cap.info,
-                 color.cap = color.cap.info))
+                 color.cap = color.cap.info,
+                 legend.args = legend.options,
+                 display.note = display.note.text,
+                 mar = mar))
 }
 dotmatrix.importance <- dotmatrix.importance.rhf
 barplot.importance.rhf <- function(x,
        vars = NULL,
-       top_n_union = 15L,
+       top.n.union = 15L,
        variable.labels = NULL,
        time.labels = NULL,
-       sort_by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
-       sort_abs = TRUE,
+       sort.by = c("q90", "sum", "max", "mean", "median", "alphabetical", "cluster", "none"),
+       sort.abs = TRUE,
        transform = c("none", "log10"),
-       color_by = c("value", "sign", "single", "none"),
-       point_color = NULL,
-       bar_color = "steelblue4",
-       value_colors = c("grey85", "steelblue4"),
-       sign_colors = c("firebrick3", "grey90", "steelblue4"),
-       cex.range = NULL,
+       color.by = c("value", "sign", "single", "none"),
+       bar.color = "steelblue4",
+       value.colors = c("grey85", "steelblue4"),
+       sign.colors = c("firebrick3", "grey90", "steelblue4"),
        bar.width = 0.65,
        bar.max.height = NULL,
        size.cap = 0.99,
        color.cap = 0.99,
        alpha = 0.9,
-       show.grid = TRUE,
+       show.grid = FALSE,
        grid.col = "grey92",
        zero.line = TRUE,
        zero.col = "grey65",
        legend = TRUE,
-       display.note = TRUE,
+       legend.args = list(),
+       display.note = FALSE,
        xlab = "",
        ylab = "",
        main = "RHF time-localized VarPro importance",
        axis.cex = 0.7,
        var.cex = 0.7,
        time.label.srt = 45,
-       save_plot = FALSE,
+       save.plot = FALSE,
        out.file = "rhf_time_varpro_barplot.pdf",
        width = 11,
        height = NULL,
        mar = NULL,
        legend.width = 0.7,
        border = NA,
+       bar.args = list(),
        ...) {
-  if (!inherits(x, "importance.rhf")) {
-    stop("This function only works for objects of class 'importance.rhf'.")
-  }
-  sort_by <- match.arg(sort_by)
+  dots <- list(...)
+  sort.by <- match.arg(sort.by)
   transform <- match.arg(transform)
-  color_by <- match.arg(color_by)
-  ## Accept the dot-matrix name as a convenience alias, so code that changes
-  ## only type = "barplot" can keep using point_color without failing.
-  if (!is.null(point_color)) {
-    bar_color <- point_color
-  }
-  ## cex.range is accepted for dot-matrix API compatibility; bar height is
-  ## controlled by bar.max.height instead.
-  invisible(cex.range)
+  color.by <- match.arg(color.by)
   bar.width <- as.numeric(bar.width)[1L]
   if (!is.finite(bar.width) || bar.width <= 0 || bar.width > 1) {
-    stop("bar.width must be a numeric value in (0, 1].")
+    stop("'bar.width' must be a numeric value in (0, 1].")
   }
   if (is.null(bar.max.height)) {
-    bar.max.height <- if (color_by == "sign") 0.42 else 0.85
+    bar.max.height <- if (color.by == "sign") 0.42 else 0.85
   }
   bar.max.height <- as.numeric(bar.max.height)[1L]
   if (!is.finite(bar.max.height) || bar.max.height <= 0) {
-    stop("bar.max.height must be a positive numeric value.")
+    stop("'bar.max.height' must be a positive numeric value.")
   }
-  if (color_by == "sign" && bar.max.height >= 0.5) {
-    stop("bar.max.height must be less than 0.5 when color_by = 'sign'.")
+  if (color.by == "sign" && bar.max.height >= 0.5) {
+    stop("'bar.max.height' must be less than 0.5 when 'color.by = \"sign\"'.")
   }
-  if (color_by != "sign" && bar.max.height >= 1) {
-    stop("bar.max.height must be less than 1 when color_by is not 'sign'.")
+  if (color.by != "sign" && bar.max.height >= 1) {
+    stop("'bar.max.height' must be less than 1 when 'color.by' is not 'sign'.")
   }
-  mat <- x$importance.matrix
-  if (!is.matrix(mat) || !length(mat)) {
-    stop("No importance values available to plot.")
+  alpha <- as.numeric(alpha)[1L]
+  if (!is.finite(alpha) || alpha < 0 || alpha > 1) {
+    stop("'alpha' must be a numeric value in [0, 1].")
   }
+  legend.width <- as.numeric(legend.width)[1L]
+  if (!is.finite(legend.width) || legend.width <= 0) {
+    stop("'legend.width' must be a positive numeric value.")
+  }
+  .rhf_validate_named_list(bar.args, "bar.args")
+  plot.data <- .rhf_importance_plot_data(x)
+  mat <- plot.data$mat
   mat <- .rhf_select_dotmatrix_variables(mat = mat,
                                          vars = vars,
-                                         top_n_union = top_n_union,
-                                         sort_abs = sort_abs)
+                                         top.n.union = top.n.union,
+                                         sort.abs = sort.abs)
   var.order <- .rhf_order_dotmatrix_variables(mat = mat,
                                               variable.labels = variable.labels,
-                                              sort_by = sort_by,
-                                              sort_abs = sort_abs)
+                                              sort.by = sort.by,
+                                              sort.abs = sort.abs)
   var.order <- .rhf_unique_in_order(var.order)
   mat <- mat[var.order, , drop = FALSE]
   var.codes <- rownames(mat)
   time.codes <- colnames(mat)
-  time.values <- x$window.info$time
-  var.labels <- .rhf_label_lookup(var.codes, variable.labels, infer_prefix = TRUE)
+  time.values <- plot.data$time.values
+  var.labels <- .rhf_label_lookup(var.codes,
+                                  variable.labels,
+                                  infer_prefix = TRUE)
   var.labels <- .rhf_make_unique_labels(var.labels, var.codes)
-  if (is.null(time.labels)) {
-    x.labels <- .rhf_format_time_labels(time.values)
+  x.labels <- .rhf_resolve_time_labels(time.codes = time.codes,
+                                       time.values = time.values,
+                                       time.labels = time.labels)
+  has.negative <- any(mat[is.finite(mat)] < 0)
+  if (has.negative && color.by != "sign") {
+    warning("Negative importance values are omitted unless 'color.by = \"sign\"'.",
+            call. = FALSE)
   }
-  else {
-    x.labels <- .rhf_label_lookup(time.codes, time.labels, infer_prefix = FALSE)
-  }
-  if (color_by == "sign") {
+  if (color.by == "sign") {
     height.metric <- abs(mat)
     color.metric <- mat
-    height.title <- if (transform == "log10") "log10(|Importance| + 1)" else "|Importance|"
-    color.title <- "Importance"
+    height.title <- if (transform == "log10") {
+      "log10(|Score| + 1)"
+    }
+    else {
+      "|Score|"
+    }
+    color.title <- "Score"
   }
   else {
     height.metric <- pmax(mat, 0)
-    color.metric <- if (color_by == "value") height.metric else NULL
-    height.title <- if (transform == "log10") "log10(Importance + 1)" else "Importance"
+    color.metric <- if (color.by == "value") height.metric else NULL
+    height.title <- if (transform == "log10") {
+      "log10(Score + 1)"
+    }
+    else {
+      "Score"
+    }
     color.title <- height.title
   }
   if (transform == "log10") {
     height.metric <- log10(height.metric + 1)
-    if (color_by == "value") {
+    if (color.by == "value") {
       color.metric <- height.metric
     }
   }
+  legend.options <- .rhf_resolve_matrix_legend_args(
+    legend.args = legend.args,
+    title = height.title,
+    color.title = color.title
+  )
   height.cap.info <- .rhf_cap_values(height.metric,
                                      cap = size.cap,
                                      symmetric = FALSE,
@@ -403,7 +503,7 @@ barplot.importance.rhf <- function(x,
                                   nrow = nrow(mat),
                                   ncol = ncol(mat),
                                   dimnames = dimnames(mat))
-  if (color_by == "value") {
+  if (color.by == "value") {
     color.cap.info <- .rhf_cap_values(color.metric,
                                       cap = color.cap,
                                       symmetric = FALSE,
@@ -414,7 +514,7 @@ barplot.importance.rhf <- function(x,
                                    ncol = ncol(mat),
                                    dimnames = dimnames(mat))
   }
-  else if (color_by == "sign") {
+  else if (color.by == "sign") {
     color.cap.info <- .rhf_cap_values(color.metric,
                                       cap = color.cap,
                                       symmetric = TRUE,
@@ -434,56 +534,78 @@ barplot.importance.rhf <- function(x,
   }
   draw <- is.finite(height.metric.display) & (height.metric.display > 0)
   bar.height.mat <- matrix(0, nrow = nrow(mat), ncol = ncol(mat))
-  height.range <- if (any(draw)) range(height.metric.display[draw], na.rm = TRUE) else c(0, 1)
-  if (any(draw)) {
-    bar.height.mat[draw] <- .rhf_rescale_from_range(height.metric.display[draw],
-                                                    from = height.range,
-                                                    to = c(0, bar.max.height))
+  height.range <- if (any(draw)) {
+    c(0, max(height.metric.display[draw], na.rm = TRUE))
   }
-  if (color_by == "none") {
+  else {
+    c(0, 1)
+  }
+  if (any(draw)) {
+    bar.height.mat[draw] <- .rhf_rescale_from_range(
+      height.metric.display[draw],
+      from = height.range,
+      to = c(0, bar.max.height)
+    )
+  }
+  if (color.by == "none") {
     col.mat <- matrix("black", nrow = nrow(mat), ncol = ncol(mat))
   }
-  else if (color_by == "single") {
-    col.mat <- matrix(bar_color, nrow = nrow(mat), ncol = ncol(mat))
+  else if (color.by == "single") {
+    col.mat <- matrix(bar.color, nrow = nrow(mat), ncol = ncol(mat))
   }
-  else if (color_by == "value") {
+  else if (color.by == "value") {
     col.mat <- matrix(.rhf_map_palette(color.metric.display,
-                                       value_colors,
+                                       value.colors,
                                        symmetric = FALSE),
                       nrow = nrow(mat), ncol = ncol(mat))
   }
   else {
     col.mat <- matrix(.rhf_map_palette(color.metric.display,
-                                       sign_colors,
+                                       sign.colors,
                                        symmetric = TRUE),
                       nrow = nrow(mat), ncol = ncol(mat))
   }
-  col.mat[draw] <- grDevices::adjustcolor(col.mat[draw], alpha.f = alpha)
+  if (any(draw)) {
+    col.mat[draw] <- grDevices::adjustcolor(col.mat[draw], alpha.f = alpha)
+  }
   display.note.text <- NULL
   if (isTRUE(display.note)) {
     if (isTRUE(height.cap.info$applied) &&
         isTRUE(color.cap.info$applied) &&
         identical(height.cap.info$label, color.cap.info$label)) {
-      display.note.text <- paste0("plot height/color capped at ", height.cap.info$label)
+      display.note.text <- paste0("plot height/color capped at ",
+                                  height.cap.info$label)
     }
     else {
       note.parts <- character(0)
       if (isTRUE(height.cap.info$applied)) {
-        note.parts <- c(note.parts, paste0("bar height capped at ", height.cap.info$label))
+        note.parts <- c(note.parts,
+                        paste0("bar height capped at ",
+                               height.cap.info$label))
       }
       if (isTRUE(color.cap.info$applied)) {
-        note.parts <- c(note.parts, paste0("color capped at ", color.cap.info$label))
+        note.parts <- c(note.parts,
+                        paste0("color capped at ", color.cap.info$label))
       }
       if (length(note.parts)) {
-        display.note.text <- paste0("plot ", paste(note.parts, collapse = "; "))
+        display.note.text <- paste0("plot ",
+                                    paste(note.parts, collapse = "; "))
       }
     }
   }
   if (is.null(height)) {
     height <- max(5.5, 0.22 * nrow(mat) + 1.8)
   }
-  if (isTRUE(save_plot)) {
-    .rhf_open_plot_device(out.file = out.file, width = width, height = height)
+  width <- as.numeric(width)[1L]
+  height <- as.numeric(height)[1L]
+  if (!is.finite(width) || width <= 0 ||
+      !is.finite(height) || height <= 0) {
+    stop("'width' and 'height' must be positive numeric values.")
+  }
+  if (isTRUE(save.plot)) {
+    .rhf_open_plot_device(out.file = out.file,
+                          width = width,
+                          height = height)
     on.exit(grDevices::dev.off(), add = TRUE)
   }
   old.par <- graphics::par(no.readonly = TRUE)
@@ -496,42 +618,63 @@ barplot.importance.rhf <- function(x,
                                       time.label.srt = time.label.srt,
                                       legend = legend)
   }
+  mar <- as.numeric(mar)
+  if (length(mar) != 4L || any(!is.finite(mar)) || any(mar < 0)) {
+    stop("'mar' must be a length-4 nonnegative numeric vector.")
+  }
   if (isTRUE(legend)) {
-    graphics::layout(matrix(c(1, 2), nrow = 1L), widths = c(5.6, legend.width))
+    graphics::layout(matrix(c(1, 2), nrow = 1L),
+                     widths = c(5.6, legend.width))
     on.exit(graphics::layout(1), add = TRUE)
   }
   graphics::par(mar = mar, mgp = c(0.9, 0.12, 0), xpd = NA)
   x.pos <- seq_len(ncol(mat))
   y.pos <- rev(seq_len(nrow(mat)))
-  graphics::plot(NA,
-                 xlim = c(0.5, ncol(mat) + 0.5),
-                 ylim = c(0.5, nrow(mat) + 0.5),
-                 xlab = xlab,
-                 ylab = ylab,
-                 xaxt = "n",
-                 yaxt = "n",
-                 bty = "n",
-                 xaxs = "i",
-                 yaxs = "i",
-                 main = main)
+  matrix.xlim <- c(0.5, ncol(mat) + 0.5)
+  matrix.ylim <- c(0.5, nrow(mat) + 0.5)
+  frame.args <- list(
+    x = NA_real_,
+    xlim = matrix.xlim,
+    ylim = matrix.ylim,
+    xlab = xlab,
+    ylab = ylab,
+    xaxt = "n",
+    yaxt = "n",
+    bty = "n",
+    xaxs = "i",
+    yaxs = "i",
+    main = main
+  )
+  .rhf_graphics_call(graphics::plot,
+                     fixed = frame.args,
+                     extra = dots,
+                     protected = names(frame.args),
+                     arg = "...")
   if (isTRUE(show.grid)) {
-    guide.height <- min(0.16, max(0.07, 0.010 * nrow(mat)))
-    graphics::segments(x0 = x.pos,
-                       y0 = 0.5,
-                       x1 = x.pos,
-                       y1 = pmin(nrow(mat) + 0.5, 0.5 + guide.height),
-                       col = grid.col,
-                       lty = 3)
-    graphics::abline(h = seq_len(nrow(mat)), col = grid.col, lty = 3)
-    graphics::abline(v = seq_len(ncol(mat)), col = grid.col, lty = 3)
+    .rhf_draw_matrix_guides(x.at = x.pos,
+                            y.at = y.pos,
+                            xlim = matrix.xlim,
+                            ylim = matrix.ylim,
+                            col = grid.col,
+                            lty = 3)
   }
-  if (color_by == "sign" && isTRUE(zero.line)) {
-    graphics::abline(h = y.pos, col = zero.col, lty = 1)
+  ## In a signed bar matrix, each horizontal row guide is also the zero
+  ## reference for that variable. Do not cover a requested dashed grid with
+  ## a second solid line; use the explicit zero-line style only when the grid
+  ## itself is not being drawn.
+  if (color.by == "sign" && isTRUE(zero.line) && !isTRUE(show.grid)) {
+    .rhf_draw_matrix_guides(y.at = y.pos,
+                            xlim = matrix.xlim,
+                            ylim = matrix.ylim,
+                            col = zero.col,
+                            lty = 1)
   }
-  ## rewrite title over guide lines
-  graphics::title(main = main)
   if (!is.null(display.note.text) && nzchar(display.note.text)) {
-    graphics::mtext(display.note.text, side = 3, line = 0.30, adj = 1, cex = 0.75)
+    graphics::mtext(display.note.text,
+                    side = 3,
+                    line = 0.30,
+                    adj = 1,
+                    cex = 0.75)
   }
   xx <- rep(x.pos, each = nrow(mat))
   yy <- rep(y.pos, times = ncol(mat))
@@ -539,7 +682,7 @@ barplot.importance.rhf <- function(x,
   keep <- as.vector(draw)
   xleft <- xx - bar.width / 2
   xright <- xx + bar.width / 2
-  if (color_by == "sign") {
+  if (color.by == "sign") {
     dir <- sign(as.vector(color.metric.display))
     dir[!is.finite(dir)] <- 1
     ybottom <- ifelse(dir >= 0, yy, yy - hh)
@@ -549,14 +692,27 @@ barplot.importance.rhf <- function(x,
     ybottom <- yy - bar.max.height / 2
     ytop <- ybottom + hh
   }
-  graphics::rect(xleft[keep],
-                 ybottom[keep],
-                 xright[keep],
-                 ytop[keep],
-                 col = as.vector(col.mat)[keep],
-                 border = border,
-                 ...)
-  graphics::axis(2, at = y.pos, labels = var.labels, las = 1, tick = FALSE, cex.axis = var.cex)
+  if (any(keep)) {
+    bar.fixed <- list(
+      xleft = xleft[keep],
+      ybottom = ybottom[keep],
+      xright = xright[keep],
+      ytop = ytop[keep],
+      col = as.vector(col.mat)[keep],
+      border = border
+    )
+    .rhf_graphics_call(graphics::rect,
+                       fixed = bar.fixed,
+                       extra = bar.args,
+                       protected = names(bar.fixed),
+                       arg = "bar.args")
+  }
+  graphics::axis(2,
+                 at = y.pos,
+                 labels = var.labels,
+                 las = 1,
+                 tick = FALSE,
+                 cex.axis = var.cex)
   .rhf_draw_dotmatrix_xlabels(at = x.pos,
                               labels = x.labels,
                               cex = axis.cex,
@@ -567,7 +723,7 @@ barplot.importance.rhf <- function(x,
     graphics::par(mar = c(mar[1L], 0.10, mar[3L], 0.10), xpd = NA)
     height.breaks <- if (any(draw)) {
       .rhf_pretty_breaks(height.metric.display[draw],
-                         n = 10L,
+                         n = 4L,
                          positive.only = TRUE,
                          symmetric = FALSE)
     }
@@ -575,32 +731,38 @@ barplot.importance.rhf <- function(x,
       numeric(0)
     }
     color.range <- NULL
-    if (color_by == "value" && any(draw)) {
+    if (color.by == "value" && any(draw)) {
       color.range <- range(color.metric.display[draw], na.rm = TRUE)
     }
-    if (color_by == "sign") {
+    if (color.by == "sign") {
       finite.color <- color.metric.display[is.finite(color.metric.display)]
       if (length(finite.color)) {
         lim <- max(abs(finite.color), na.rm = TRUE)
-        color.range <- c(-lim, lim)
+        if (is.finite(lim) && lim > 0) {
+          color.range <- c(-lim, lim)
+        }
       }
     }
-    legend.bar.color <- if (color_by == "none") "black" else bar_color
+    legend.bar.color <- if (color.by == "none") "black" else bar.color
     .rhf_draw_barmatrix_legend(height.breaks = height.breaks,
                                height.range = height.range,
-                               height.title = height.title,
+                               height.title = legend.options$title,
                                bar.max.height = bar.max.height,
                                alpha = alpha,
-                               color_by = color_by,
+                               color.by = color.by,
                                color.range = color.range,
-                               color.title = color.title,
-                               bar_color = legend.bar.color,
-                               value_colors = value_colors,
-                               sign_colors = sign_colors)
+                               color.title = legend.options$color.title,
+                               bar.color = legend.bar.color,
+                               value.colors = value.colors,
+                               sign.colors = sign.colors,
+                               cex.text = legend.options$cex,
+                               cex.title = legend.options$title.cex)
   }
   invisible(list(matrix = mat,
                  variables = var.codes,
+                 labels = var.labels,
                  times = time.values,
+                 time.labels = x.labels,
                  height.metric = height.metric,
                  height.metric.display = height.metric.display,
                  size.metric = height.metric,
@@ -610,27 +772,37 @@ barplot.importance.rhf <- function(x,
                  bar.height = bar.height.mat,
                  height.cap = height.cap.info,
                  size.cap = height.cap.info,
-                 color.cap = color.cap.info))
+                 color.cap = color.cap.info,
+                 legend.args = legend.options,
+                 display.note = display.note.text,
+                 mar = mar))
 }
 barplot.importance <- barplot.importance.rhf
 ########################################################################
 ## plotting method
 ########################################################################
 plot.importance.rhf <- function(x,
-                 type = c("dotmatrix", "barplot", "lines"),
+                 type = c("barplot", "dotmatrix", "lines"),
                  vars = NULL,
+                 variable.labels = NULL,
                  top = 10L,
                  rank.by = c("q90", "median", "mean", "max"),
                  curve = c("step", "line", "lowess"),
                  smooth.f = 2/3,
                  display.cap = 0.99,
-                 display.note = TRUE,
+                 display.note = FALSE,
                  xlab = NULL,
                  ylab = NULL,
                  lty = 1,
                  lwd = 2.0,
+                 line.colors = NULL,
+                 line.args = list(),
+                 legend = TRUE,
+                 legend.args = list(),
                  ...) {
+  dots <- list(...)
   type <- match.arg(type)
+  .rhf_validate_named_list(legend.args, "legend.args")
   if (type == "dotmatrix") {
     if (is.null(xlab)) {
       xlab <- ""
@@ -638,7 +810,16 @@ plot.importance.rhf <- function(x,
     if (is.null(ylab)) {
       ylab <- ""
     }
-    return(dotmatrix.importance.rhf(x = x, vars = vars, xlab = xlab, ylab = ylab, ...))
+    args <- c(list(x = x,
+                   vars = vars,
+                   variable.labels = variable.labels,
+                   legend = legend,
+                   legend.args = legend.args,
+                   display.note = display.note,
+                   xlab = xlab,
+                   ylab = ylab),
+              dots)
+    return(do.call(dotmatrix.importance.rhf, args))
   }
   if (type == "barplot") {
     if (is.null(xlab)) {
@@ -647,7 +828,16 @@ plot.importance.rhf <- function(x,
     if (is.null(ylab)) {
       ylab <- ""
     }
-    return(barplot.importance.rhf(x = x, vars = vars, xlab = xlab, ylab = ylab, ...))
+    args <- c(list(x = x,
+                   vars = vars,
+                   variable.labels = variable.labels,
+                   legend = legend,
+                   legend.args = legend.args,
+                   display.note = display.note,
+                   xlab = xlab,
+                   ylab = ylab),
+              dots)
+    return(do.call(barplot.importance.rhf, args))
   }
   rank.by <- match.arg(rank.by)
   curve <- match.arg(curve)
@@ -655,10 +845,14 @@ plot.importance.rhf <- function(x,
   if (!is.finite(top) || top < 1L) {
     stop("'top' must be a positive integer.")
   }
-  mat <- x$importance.matrix
-  if (!is.matrix(mat) || !length(mat)) {
-    stop("No importance values available to plot.")
+  smooth.f <- as.numeric(smooth.f)[1L]
+  if (!is.finite(smooth.f) || smooth.f <= 0) {
+    stop("'smooth.f' must be a positive numeric value.")
   }
+  .rhf_validate_named_list(line.args, "line.args")
+  .rhf_validate_named_list(legend.args, "legend.args")
+  plot.data <- .rhf_importance_plot_data(x)
+  mat <- plot.data$mat
   if (is.null(vars)) {
     score <- .rhf_row_summary(mat, rank.by = rank.by)
     ord <- order(score, decreasing = TRUE, na.last = TRUE)
@@ -669,57 +863,97 @@ plot.importance.rhf <- function(x,
     stop("No requested variables found in the importance object.")
   }
   zz.raw <- mat[vars, , drop = FALSE]
-  xx <- x$window.info$time
+  xx <- plot.data$time.values
   if (is.null(xlab)) {
     xlab <- "Time"
   }
   if (is.null(ylab)) {
-    ylab <- "Localized Importance"
+    ylab <- "Localized Score"
   }
-  cap.info <- .rhf_cap_values(zz.raw,
-                              cap = display.cap,
-                              symmetric = any(zz.raw[is.finite(zz.raw)] < 0),
-                              positive.only = FALSE,
-                              arg = "display.cap")
+  cap.info <- .rhf_cap_values(
+    zz.raw,
+    cap = display.cap,
+    symmetric = any(zz.raw[is.finite(zz.raw)] < 0),
+    positive.only = FALSE,
+    arg = "display.cap"
+  )
   zz <- matrix(cap.info$values,
                nrow = nrow(zz.raw),
                ncol = ncol(zz.raw),
                dimnames = dimnames(zz.raw))
-  ylim <- range(zz, na.rm = TRUE)
-  if (!all(is.finite(ylim))) {
+  finite.zz <- zz[is.finite(zz)]
+  if (!length(finite.zz)) {
     ylim <- c(0, 1)
   }
-  cols <- seq_len(nrow(zz))
-  lty <- rep_len(lty, nrow(zz))
-  lwd <- rep_len(lwd, nrow(zz))
-  if (curve %in% c("step", "line")) {
-    graphics::matplot(xx,
-                      t(zz),
-                      type = if (curve == "step") "s" else "l",
-                      lty = lty,
-                      lwd = lwd,
-                      col = cols,
-                      xlab = xlab,
-                      ylab = ylab,
-                      ylim = ylim,
-                      ...)
+  else if (min(finite.zz) >= 0 &&
+           diff(range(finite.zz)) == 0) {
+    upper <- max(1, finite.zz[1L] * 1.05)
+    ylim <- c(0, upper)
   }
   else {
-    graphics::plot(NA,
-                   xlim = range(xx, na.rm = TRUE),
-                   ylim = ylim,
-                   xlab = xlab,
-                   ylab = ylab,
-                   type = "n",
-                   ...)
-    for (i in seq_len(nrow(zz))) {
-      ok <- is.finite(xx) & is.finite(zz[i, ])
-      if (sum(ok) < 2L) {
-        next
-      }
-      sm <- stats::lowess(xx[ok], zz[i, ok], f = smooth.f, iter = 0)
-      graphics::lines(sm$x, sm$y, col = cols[i], lty = lty[i], lwd = lwd[i])
+    ylim <- .rhf_expand_plot_range(finite.zz)
+  }
+  finite.xx <- xx[is.finite(xx)]
+  if (!length(finite.xx)) {
+    stop("No finite time values are available for the line plot.")
+  }
+  xlim <- .rhf_expand_plot_range(finite.xx,
+                                 fallback = c(0, 1),
+                                 relative.pad = 0.02,
+                                 absolute.pad = 0.5)
+  if (is.null(line.colors)) {
+    cols <- seq_len(nrow(zz))
+  }
+  else {
+    if (!length(line.colors) || anyNA(line.colors)) {
+      stop("'line.colors' must contain at least one non-missing color.")
     }
+    cols <- rep_len(line.colors, nrow(zz))
+  }
+  lty <- rep_len(lty, nrow(zz))
+  lwd <- rep_len(lwd, nrow(zz))
+  frame.args <- list(
+    x = NA_real_,
+    xlim = xlim,
+    ylim = ylim,
+    xlab = xlab,
+    ylab = ylab,
+    type = "n"
+  )
+  .rhf_graphics_call(graphics::plot,
+                     fixed = frame.args,
+                     extra = dots,
+                     protected = c("x", "xlab", "ylab", "type"),
+                     arg = "...")
+  for (i in seq_len(nrow(zz))) {
+    ok <- is.finite(xx) & is.finite(zz[i, ])
+    if (sum(ok) < 2L) {
+      next
+    }
+    if (curve == "lowess") {
+      sm <- stats::lowess(xx[ok], zz[i, ok], f = smooth.f, iter = 0)
+      line.x <- sm$x
+      line.y <- sm$y
+      line.type <- "l"
+    }
+    else {
+      line.x <- xx[ok]
+      line.y <- zz[i, ok]
+      line.type <- if (curve == "step") "s" else "l"
+    }
+    line.fixed <- list(
+      x = line.x,
+      y = line.y,
+      type = line.type,
+      col = cols[i],
+      lty = lty[i],
+      lwd = lwd[i]
+    )
+    .rhf_graphics_call(graphics::lines,
+                       fixed = line.fixed,
+                       extra = line.args,
+                       protected = names(line.fixed),
+                       arg = "line.args")
   }
   if (isTRUE(display.note) && isTRUE(cap.info$applied)) {
     graphics::mtext(paste0("plot capped at ", cap.info$label),
@@ -728,11 +962,29 @@ plot.importance.rhf <- function(x,
                     adj = 1,
                     cex = 0.75)
   }
-  graphics::legend("topright",
-                   legend = vars,
-                   col = cols,
-                   lty = lty,
-                   lwd = lwd,
-                   bty = "n")
+  var.labels <- .rhf_label_lookup(vars,
+                                  variable.labels,
+                                  infer_prefix = TRUE)
+  var.labels <- .rhf_make_unique_labels(var.labels, vars)
+  if (isTRUE(legend)) {
+    legend.fixed <- list(
+      x = "topright",
+      legend = var.labels,
+      col = cols,
+      lty = lty,
+      lwd = lwd,
+      bty = "n"
+    )
+    .rhf_graphics_call(graphics::legend,
+                       fixed = legend.fixed,
+                       extra = legend.args,
+                       protected = c("legend", "col", "lty", "lwd"),
+                       arg = "legend.args")
+  }
+  attr(zz, "variables") <- vars
+  attr(zz, "labels") <- var.labels
+  attr(zz, "times") <- xx
+  attr(zz, "display.cap") <- cap.info
+  attr(zz, "legend.args") <- legend.args
   invisible(zz)
 }

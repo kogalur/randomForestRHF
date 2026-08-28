@@ -59,6 +59,14 @@ void calculateAllTerminalNodeOutcomesTDC(char mode,
   getLocalNelsonAalen(treeID, parent);
   getNelsonAalen(treeID, parent);
   getRatio(treeID, parent);
+  if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+    if ((RF_optHigh & OPT_TERM_OUTG) ||
+        (RF_opt & OPT_IENS) ||
+        (RF_opt & OPT_OENS) ||
+        (RF_opt & OPT_FENS)) {
+      getCOEObjects(treeID, parent);
+    }
+  }
   if (!(SG_optLocal & SG_OPT_SWTCH_ZERO)  &&
       !(SG_optLocal & SG_OPT_SWTCH_ONE)   &&
       !(SG_optLocal & SG_OPT_SWTCH_TWO)   &&
@@ -310,6 +318,153 @@ void getPseudoHazard5(uint treeID, TerminalSurvival *parent) {
     }
   }
 }
+static uint firstNodeTimeInterestGreater(double value) {
+  int low, high, mid, result;
+  low = 1;
+  high = (int) RF_sortedTimeInterestSize;
+  result = high + 1;
+  while (low <= high) {
+    mid = low + ((high - low) >> 1);
+    if (RF_timeInterest[mid] > value) {
+      result = mid;
+      high = mid - 1;
+    }
+    else {
+      low = mid + 1;
+    }
+  }
+  return (uint) result;
+}
+static uint firstNodeTimeInterestGreaterOrEqual(double value) {
+  int low, high, mid, result;
+  low = 1;
+  high = (int) RF_sortedTimeInterestSize;
+  result = high + 1;
+  while (low <= high) {
+    mid = low + ((high - low) >> 1);
+    if (RF_timeInterest[mid] >= value) {
+      result = mid;
+      high = mid - 1;
+    }
+    else {
+      low = mid + 1;
+    }
+  }
+  return (uint) result;
+}
+void getCOEObjects(uint treeID, TerminalSurvival *parent) {
+  Terminal *tTerm;
+  double *fullIntervalDiff;
+  double fullIntervalCount;
+  double left, right;
+  double intervalLeft, intervalRight;
+  double overlapLeft, overlapRight;
+  double cumulativeCOE;
+  uint memberID;
+  uint caseID;
+  uint firstIndex;
+  uint lastIndex;
+  uint eventIndex;
+  uint timeIndex;
+  uint k;
+  tTerm = (Terminal *) (parent -> base);
+  stackCOEObjects(tTerm);
+  for (k = 1; k <= parent -> sTimeSize; k++) {
+    (tTerm -> nodeU)[k] = 0.0;
+    (tTerm -> nodeV)[k] = 0.0;
+    (tTerm -> coeHazard)[k] = RF_nativeNaN;
+    (tTerm -> coeCHF)[k] = 0.0;
+  }
+  fullIntervalDiff = dvector(1, parent -> sTimeSize + 1);
+  for (timeIndex = 1; timeIndex <= parent -> sTimeSize + 1; timeIndex++) {
+    fullIntervalDiff[timeIndex] = 0.0;
+  }
+  for (memberID = 1; memberID <= tTerm -> repMembrCount; memberID++) {
+    caseID = tTerm -> repMembrIndx[memberID];
+    left = RF_responseIn[RF_startTimeIndex][caseID];
+    right = RF_responseIn[RF_timeIndex][caseID];
+    if (!(right > left)) {
+      continue;
+    }
+    firstIndex = firstNodeTimeInterestGreater(left);
+    if (firstIndex <= parent -> sTimeSize) {
+      lastIndex = firstNodeTimeInterestGreaterOrEqual(right);
+      if (lastIndex > parent -> sTimeSize) {
+        lastIndex = parent -> sTimeSize;
+      }
+      if (lastIndex >= firstIndex) {
+        intervalLeft = (firstIndex > 1) ? RF_timeInterest[firstIndex - 1] : 0.0;
+        if (firstIndex == lastIndex) {
+          intervalRight = RF_timeInterest[firstIndex];
+          overlapLeft = (left > intervalLeft) ? left : intervalLeft;
+          overlapRight = (right < intervalRight) ? right : intervalRight;
+          if (overlapRight > overlapLeft) {
+            tTerm -> nodeU[firstIndex] += overlapRight - overlapLeft;
+          }
+        }
+        else {
+          intervalRight = RF_timeInterest[firstIndex];
+          overlapLeft = (left > intervalLeft) ? left : intervalLeft;
+          if (intervalRight > overlapLeft) {
+            tTerm -> nodeU[firstIndex] += intervalRight - overlapLeft;
+          }
+          intervalLeft = (lastIndex > 1) ? RF_timeInterest[lastIndex - 1] : 0.0;
+          intervalRight = RF_timeInterest[lastIndex];
+          overlapRight = (right < intervalRight) ? right : intervalRight;
+          if (overlapRight > intervalLeft) {
+            tTerm -> nodeU[lastIndex] += overlapRight - intervalLeft;
+          }
+          fullIntervalDiff[firstIndex + 1] += 1.0;
+          fullIntervalDiff[lastIndex] -= 1.0;
+        }
+      }
+    }
+    if (RF_responseIn[RF_statusIndex][caseID] > 0) {
+      eventIndex = firstNodeTimeInterestGreaterOrEqual(right);
+      if (eventIndex <= parent -> sTimeSize) {
+        intervalLeft = (eventIndex > 1) ? RF_timeInterest[eventIndex - 1] : 0.0;
+        if ((intervalLeft < right) && (right <= RF_timeInterest[eventIndex])) {
+          tTerm -> nodeV[eventIndex] += 1.0;
+        }
+      }
+    }
+  }        
+  fullIntervalCount = 0.0;
+  for (timeIndex = 1; timeIndex <= parent -> sTimeSize; timeIndex++) {
+    fullIntervalCount += fullIntervalDiff[timeIndex];
+    if (fullIntervalCount > 0.0) {
+      intervalLeft = (timeIndex > 1) ? RF_timeInterest[timeIndex - 1] : 0.0;
+      intervalRight = RF_timeInterest[timeIndex];
+      tTerm -> nodeU[timeIndex] += fullIntervalCount * (intervalRight - intervalLeft);
+    }
+  }
+  cumulativeCOE = 0.0;
+  for (timeIndex = 1; timeIndex <= parent -> sTimeSize; timeIndex++) {
+    if (tTerm -> nodeU[timeIndex] > 0.0) {
+      tTerm -> coeHazard[timeIndex] =
+        tTerm -> nodeV[timeIndex] / tTerm -> nodeU[timeIndex];
+      intervalLeft = (timeIndex > 1) ? RF_timeInterest[timeIndex - 1] : 0.0;
+      intervalRight = RF_timeInterest[timeIndex];
+      cumulativeCOE += (intervalRight - intervalLeft) * tTerm -> coeHazard[timeIndex];
+    }
+    else {
+      if (tTerm -> nodeV[timeIndex] > 0.0) {
+        RF_nativeError("\nRF-SRC:  *** ERROR *** ");
+        RF_nativeError("\nRF-SRC:  COE node-time cell has zero exposure and positive event count.");
+        RF_nativeError("\nRF-SRC:  tree=%10d terminal=%10d timeIndex=%10d U=%12.6f V=%12.6f",
+                       treeID,
+                       parent -> base -> nodeID,
+                       timeIndex,
+                       tTerm -> nodeU[timeIndex],
+                       tTerm -> nodeV[timeIndex]);
+        RF_nativeExit();
+      }
+      tTerm -> coeHazard[timeIndex] = RF_nativeNaN;
+    }
+    tTerm -> coeCHF[timeIndex] = cumulativeCOE;
+  }
+  free_dvector(fullIntervalDiff, 1, parent -> sTimeSize + 1);
+}
 void getHeadCorrections(uint treeID, TerminalSurvival *parent) {
   uint j, k;
   if (parent -> eTimeSize > 0) {
@@ -472,6 +627,14 @@ void assignAllTerminalNodeOutcomesTDC(char mode,
   getLocalNelsonAalen(treeID, parent);
   getNelsonAalen(treeID, parent);
   getRatio(treeID, parent);
+  if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+    if ((RF_optHigh & OPT_TERM_OUTG) ||
+        (RF_opt & OPT_IENS) ||
+        (RF_opt & OPT_OENS) ||
+        (RF_opt & OPT_FENS)) {
+      getCOEObjects(treeID, parent);
+    }
+  }
   if (!(SG_optLocal & SG_OPT_SWTCH_ZERO)  &&
       !(SG_optLocal & SG_OPT_SWTCH_ONE)   &&
       !(SG_optLocal & SG_OPT_SWTCH_TWO)   &&

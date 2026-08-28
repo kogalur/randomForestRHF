@@ -1,14 +1,20 @@
 ## tune.treesize: choose treesize to optimize either OOB risk or OOB iAUC.uno
+## Incident-AUC diagnostic revision: 2026-08-25.2
 tune.treesize.rhf <- function(formula, data,
                               ntree = 500,
                               nsplit = 10,
                               nodesize = NULL,
+                              ## working time-grid controls
+                              ntime = 50,
+                              min.events.per.gap = 10,
+                              ## hazard aggregation control
+                              adaptive = TRUE,
                               ## performance measure
                               perf = c("risk", "iAUC"),
                               ## extra arguments passed to auct.rhf when perf = "iAUC"
                               auct.args = NULL,
                               ## search bounds
-                              lower = 2L,
+                              lower = 5L,
                               upper = NULL,
                               C = 3,
                               ## search control
@@ -22,6 +28,74 @@ tune.treesize.rhf <- function(formula, data,
                               ...) {
   method <- match.arg(method)
   perf   <- match.arg(perf)
+  adaptive <- get.adaptive(adaptive)
+  tune.dots <- list(...)
+  declared.event.process <- tune.dots$event.process
+  if (is.null(declared.event.process)) {
+    declared.event.process <- attr(data, "event.process", exact = TRUE)
+  }
+  if (is.null(declared.event.process)) {
+    declared.event.process <- "auto"
+  }
+  declared.event.process <- .rhf.match.event.process(declared.event.process)
+  ## This tuning wrapper currently assumes one terminal event per subject.
+  ## Detect recurrent input before the first candidate forest is grown.
+  get_counting_names_from_formula <- function(formula, data) {
+    f <- as.formula(formula)
+    lhs <- f[[2]]
+    if (!is.call(lhs) || !identical(as.character(lhs[[1]]), "Surv")) {
+      return(NULL)
+    }
+    L <- as.list(lhs)[-1]
+    if (length(L) != 4L) {
+      return(NULL)
+    }
+    getnm <- function(z) paste(deparse(z), collapse = "")
+    nm <- vapply(L, getnm, character(1L))
+    names(nm) <- c("id", "start", "stop", "event")
+    if (!all(nm %in% names(data))) {
+      return(NULL)
+    }
+    nm
+  }
+  counting.names <- get_counting_names_from_formula(formula, data)
+  if (!is.null(counting.names)) {
+    outcome.data <- data[, unname(counting.names), drop = FALSE]
+    keep.outcome <- complete.cases(outcome.data)
+    outcome.data <- outcome.data[keep.outcome, , drop = FALSE]
+    if (nrow(outcome.data) > 0L) {
+      coerce.time <- function(x) {
+        if (is.factor(x)) as.numeric(as.character(x)) else as.numeric(x)
+      }
+      process.info <- tryCatch(
+        .rhf.event.process.info(
+          id = outcome.data[[counting.names[["id"]]]],
+          event = outcome.data[[counting.names[["event"]]]],
+          start = coerce.time(outcome.data[[counting.names[["start"]]]]),
+          stop = coerce.time(outcome.data[[counting.names[["stop"]]]]),
+          event.process = "auto",
+          binary = TRUE,
+          what = counting.names[["event"]]
+        ),
+        error = function(e) {
+          stop("tune.treesize.rhf() requires a complete 0/1 terminal-event outcome: ",
+               conditionMessage(e), call. = FALSE)
+        }
+      )
+      recurrent.data <- identical(declared.event.process, "recurrent") ||
+                        identical(process.info$inferred, "recurrent") ||
+                        !isTRUE(process.info$terminal.valid)
+      if (recurrent.data) {
+        stop(
+          "tune.treesize.rhf() is currently available only for terminal ",
+          "single-event RHF data. Recurrent-event data were detected. ",
+          "Specify treesize directly in rhf(); recurrent-event tree-size ",
+          "tuning is not currently implemented.",
+          call. = FALSE
+        )
+      }
+    }
+  }
   ## ---- robust subject count (prefer explicit id, else 'id' column, else rows)
   get_id_from_formula <- function(formula, data) {
     f   <- as.formula(formula)
@@ -39,16 +113,103 @@ tune.treesize.rhf <- function(formula, data,
   id.var <- get_id_from_formula(formula, data)
   n.subj <- if (!is.null(id.var)) length(unique(data[[id.var]])) else nrow(data)
   ## ---- bounds
-  if (is.null(upper)) upper <- ceiling(C * min(30, n.subj / 5))
   lower <- as.integer(max(2L, lower))
+  if (is.null(upper)) {
+    ## Use the same event-processing path as rhf.workhorse() so the automatic
+    ## tuning range is based on the number of events that remain after RHF data
+    ## cleaning and event-process validation.  The explicit ntime and
+    ## min.events.per.gap controls are also passed unchanged to every candidate
+    ## forest and to the final refit.
+    if (!is.numeric(min.events.per.gap) ||
+        length(min.events.per.gap) != 1L ||
+        is.na(min.events.per.gap) ||
+        !is.finite(min.events.per.gap) ||
+        min.events.per.gap < 1) {
+      stop("min.events.per.gap must be a positive finite scalar.",
+           call. = FALSE)
+    }
+    ntime.bound <- ntime
+    formula.prelim <- parse.formula(as.formula(formula), data, NULL)
+    formula.detail <- finalize.formula(formula.prelim, data)
+    family <- formula.detail$family
+    xvar.names <- formula.detail$xvar.names
+    yvar.names <- formula.detail$yvar.names
+    subj.names <- formula.detail$subj.names
+    if (family != "surv-tdc") {
+      stop("tune.treesize.rhf() currently works only for TDC survival.",
+           call. = FALSE)
+    }
+    if (length(xvar.names) == 0L) {
+      stop("The formula did not define any x variables.", call. = FALSE)
+    }
+    if (length(yvar.names) == 0L) {
+      stop("The formula did not define any y variables.", call. = FALSE)
+    }
+    if (length(subj.names) == 0L) {
+      stop("The formula did not identify a subject variable.", call. = FALSE)
+    }
+    bound.data <- cleanup.counting(
+      data,
+      xvar.names,
+      yvar.names,
+      subj.names,
+      event.process = declared.event.process
+    )
+    time.map <- attr(bound.data, "time.map")
+    event.process <- attr(bound.data, "event.process")
+    event.process.info <- attr(bound.data, "event.process.info")
+    subj.bound <- bound.data[, subj.names]
+    yvar.bound <- bound.data[, yvar.names]
+    n.subj <- length(unique(subj.bound))
+    if (length(ntime.bound) > 1L) {
+      ntime.bound <- .forward.time(ntime.bound, time.map)
+    }
+    event.info <- get.grow.event.info(
+      yvar.bound,
+      family,
+      ntime = ntime.bound,
+      min.events.per.gap = min.events.per.gap,
+      subj = subj.bound,
+      event.process = event.process,
+      process.info = event.process.info
+    )
+    ndead <- event.info$n.event
+    default.size <- default.treesize(
+      ndead = ndead,
+      min.events.per.leaf = min.events.per.gap
+    )
+    support.limit <- floor(
+      ndead / min.events.per.gap
+    )
+    upper <- min(
+      ceiling(C * default.size),
+      support.limit
+    )
+    rm(bound.data)
+    if (!is.finite(upper) || upper <= lower) {
+      stop(
+        paste0(
+          "The event-supported automatic upper tree-size bound (", upper,
+          ") must be greater than lower (", lower, "). ",
+          "Reduce lower or min.events.per.gap, or specify upper explicitly."
+        ),
+        call. = FALSE
+      )
+    }
+  }
   upper <- as.integer(max(lower + 1L, upper))
   if (!is.null(seed)) set.seed(seed)
   ## ---- caches (keyed by treesize)
+  ## Only scalar tuning results and the native grow seed are retained.  The
+  ## selected forest is refitted after the search rather than returned from an
+  ## earlier candidate evaluation.  This leaves a fresh, standalone RHF object
+  ## suitable for both prediction and restore mode.
   risk.cache <- new.env(parent = emptyenv())
-  obj.cache  <- if (isTRUE(forest)) new.env(parent = emptyenv()) else NULL
+  seed.cache <- if (isTRUE(forest)) new.env(parent = emptyenv()) else NULL
   ## Only used when perf = "iAUC"
-  iauc.cache    <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
-  iauc.se.cache <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
+  iauc.cache       <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
+  iauc.se.cache    <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
+  iauc.error.cache <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
   ## ---- helper to evaluate a single treesize
   eval.one <- function(ts) {
     ts  <- as.integer(ts)
@@ -65,14 +226,23 @@ tune.treesize.rhf <- function(formula, data,
       }
       return(r)
     }
-    ## refit RHF at this treesize
-    if (!is.null(seed)) set.seed(seed)  ## make cross-size comparisons comparable
+    ## Fit RHF at this treesize.  Generate the native grow seed explicitly so
+    ## it can be reused for the final refit at the selected tree size.  This
+    ## preserves the previous seed behavior: with a user seed, every candidate
+    ## uses the same forest randomization; without one, candidates use successive
+    ## random seeds.
+    if (!is.null(seed)) set.seed(seed)
+    fit.seed <- get.seed(NULL)
     fit <- rhf(formula = formula,
-               data    = data,
-               ntree   = ntree,
-               nsplit  = nsplit,
+               data = data,
+               ntree = ntree,
+               nsplit = nsplit,
                treesize = ts,
                nodesize = nodesize,
+               ntime = ntime,
+               min.events.per.gap = min.events.per.gap,
+               adaptive = adaptive,
+               seed = fit.seed,
                ...)
     ## ---- performance measure
     if (perf == "risk") {
@@ -87,24 +257,48 @@ tune.treesize.rhf <- function(formula, data,
       args.auct <- auct.args
       if (is.null(args.auct)) args.auct <- list()
       args.auct$object <- fit  ## enforce
-      auct.obj <- try(do.call(auct.rhf, args.auct), silent = TRUE)
-      if (inherits(auct.obj, "try-error")) {
+      auct.result <- tryCatch(
+        do.call(auct.rhf, args.auct),
+        error = identity
+      )
+      if (inherits(auct.result, "error")) {
+        auct.error <- conditionMessage(auct.result)
         if (isTRUE(verbose)) {
-          message(sprintf("treesize = %d   auct.rhf() failed; treating criterion as +Inf", ts))
+          message(
+            sprintf(
+              "treesize = %d   auct.rhf() failed; treating criterion as +Inf\n  %s",
+              ts, auct.error
+            )
+          )
         }
         r <- Inf
-        if (!is.null(iauc.cache))    assign(key, NA_real_, envir = iauc.cache)
-        if (!is.null(iauc.se.cache)) assign(key, NA_real_, envir = iauc.se.cache)
+        if (!is.null(iauc.cache)) {
+          assign(key, NA_real_, envir = iauc.cache)
+        }
+        if (!is.null(iauc.se.cache)) {
+          assign(key, NA_real_, envir = iauc.se.cache)
+        }
+        if (!is.null(iauc.error.cache)) {
+          assign(key, auct.error, envir = iauc.error.cache)
+        }
       } else {
+        auct.obj <- auct.result
         iauc <- auct.obj$iAUC.uno
-        if (!is.finite(iauc)) {
+        if (!is.numeric(iauc) || length(iauc) != 1L || !is.finite(iauc)) {
+          auct.error <- "auct.rhf() returned a missing or non-finite scalar iAUC.uno."
           if (isTRUE(verbose)) {
-            message(sprintf("treesize = %d   iAUC.uno is non-finite; treating criterion as +Inf", ts))
+            message(
+              sprintf(
+                "treesize = %d   iAUC.uno is non-finite; treating criterion as +Inf",
+                ts
+              )
+            )
           }
           r <- Inf
           se <- NA_real_
         } else {
           r <- 1 - iauc
+          auct.error <- NA_character_
           if (isTRUE(verbose)) {
             message(sprintf("treesize = %d   iAUC.uno = %.6f   criterion (1 - iAUC.uno) = %.6f",
                             ts, iauc, r))
@@ -117,13 +311,21 @@ tune.treesize.rhf <- function(formula, data,
             se <- auct.obj$boot$iAUC.uno.se
           }
         }
-        if (!is.null(iauc.cache))    assign(key, iauc, envir = iauc.cache)
-        if (!is.null(iauc.se.cache)) assign(key, se,   envir = iauc.se.cache)
+        if (!is.null(iauc.cache)) {
+          assign(key, iauc, envir = iauc.cache)
+        }
+        if (!is.null(iauc.se.cache)) {
+          assign(key, se, envir = iauc.se.cache)
+        }
+        if (!is.null(iauc.error.cache)) {
+          assign(key, auct.error, envir = iauc.error.cache)
+        }
       }
     }
-    ## cache results
+    ## Cache the criterion and, when a forest is requested, the exact native
+    ## seed needed to reproduce this candidate in the final refit.
     assign(key, r, envir = risk.cache)
-    if (isTRUE(forest)) assign(key, fit, envir = obj.cache)
+    if (isTRUE(forest)) assign(key, fit.seed, envir = seed.cache)
     r
   }
   ## collect the path
@@ -161,8 +363,27 @@ tune.treesize.rhf <- function(formula, data,
         },
         numeric(1)
       )
-      path$iAUC    <- iauc
-      path$iAUC.se <- se
+      err <- vapply(
+        sizes,
+        function(k) {
+          key <- as.character(k)
+          if (!is.null(iauc.error.cache) &&
+              exists(key, envir = iauc.error.cache, inherits = FALSE)) {
+            value <- get(key, envir = iauc.error.cache, inherits = FALSE)
+            if (is.null(value) || !length(value)) {
+              NA_character_
+            } else {
+              as.character(value)[1L]
+            }
+          } else {
+            NA_character_
+          }
+        },
+        character(1L)
+      )
+      path$iAUC       <- iauc
+      path$iAUC.se    <- se
+      path$auct.error <- err
     }
     path
   }
@@ -222,21 +443,52 @@ tune.treesize.rhf <- function(formula, data,
   }
   ## ---- GLOBAL best over *all* evaluated sizes
   path <- collect.path()
+  if (!any(is.finite(path$risk))) {
+    detail <- NULL
+    if ("auct.error" %in% names(path)) {
+      detail <- unique(path$auct.error[
+        !is.na(path$auct.error) & nzchar(path$auct.error)
+      ])
+    }
+    suffix <- if (length(detail)) {
+      paste0(" First auct.rhf() error: ", detail[[1L]])
+    } else {
+      ""
+    }
+    stop(
+      "No evaluated tree size produced a finite ",
+      if (perf == "iAUC") "iAUC tuning criterion." else "OOB-risk criterion.",
+      suffix,
+      call. = FALSE
+    )
+  }
   idx  <- which.min(path$risk)
   best.size <- path$treesize[idx]
   best.err  <- path$risk[idx]
-  ## Optionally return the forest at best.size
+  ## Optionally return a final RHF fit at best.size.  Do not return a forest
+  ## object cached from an earlier candidate evaluation: the tuning search may
+  ## perform several native grow calls after that candidate was fitted.  Refit
+  ## the selected size last, using the exact candidate seed, so the returned
+  ## object is coherent for ordinary prediction and restore mode.
   best.fit <- NULL
   if (isTRUE(forest)) {
     key <- as.character(best.size)
-    if (!exists(key, envir = obj.cache, inherits = FALSE)) {
-      if (!is.null(seed)) set.seed(seed)
-      best.fit <- rhf(formula = formula, data = data,
-                      ntree = ntree, nsplit = nsplit,
-                      treesize = best.size, nodesize = nodesize, ...)
-    } else {
-      best.fit <- get(key, envir = obj.cache, inherits = FALSE)
+    if (!exists(key, envir = seed.cache, inherits = FALSE)) {
+      stop("Internal error: selected tree size has no cached grow seed.",
+           call. = FALSE)
     }
+    best.seed <- get(key, envir = seed.cache, inherits = FALSE)
+    best.fit <- rhf(formula = formula,
+                    data = data,
+                    ntree = ntree,
+                    nsplit = nsplit,
+                    treesize = best.size,
+                    nodesize = nodesize,
+                    ntime = ntime,
+                    min.events.per.gap = min.events.per.gap,
+                    adaptive = adaptive,
+                    seed = best.seed,
+                    ...)
   }
   out <- list(
     best.size   = best.size,
@@ -246,6 +498,7 @@ tune.treesize.rhf <- function(formula, data,
     C           = C,
     method      = method,
     perf        = perf,
+    adaptive    = adaptive,
     path        = path
   )
   if (!is.null(best.fit)) out$forest <- best.fit
@@ -254,12 +507,14 @@ tune.treesize.rhf <- function(formula, data,
 }
 tune.rhf <- tune.treesize.rhf
 ## Convenience wrapper: tune treesize by iAUC.uno from auct.rhf
-tune.iAUC.rhf <- function(formula, data, auct.args = NULL, ...) {
+tune.iAUC.rhf <- function(formula, data, auct.args = NULL,
+                          adaptive = TRUE, ...) {
   tune.treesize.rhf(
     formula  = formula,
     data     = data,
     perf     = "iAUC",
     auct.args = auct.args,
+    adaptive = adaptive,
     ...
   )
 }
@@ -281,6 +536,25 @@ plot.tune.treesize.rhf <- function(x,
     yy <- path$iAUC
     if (is.null(ylab)) ylab <- "OOB iAUC.uno"
     if (is.null(main)) main <- "Tuning treesize by OOB iAUC"
+    if (!any(is.finite(yy))) {
+      detail <- if ("auct.error" %in% names(path)) {
+        unique(path$auct.error[
+          !is.na(path$auct.error) & nzchar(path$auct.error)
+        ])
+      } else {
+        character(0L)
+      }
+      suffix <- if (length(detail)) {
+        paste0(" First auct.rhf() error: ", detail[[1L]])
+      } else {
+        ""
+      }
+      stop(
+        "No finite OOB iAUC values are available for plotting.",
+        suffix,
+        call. = FALSE
+      )
+    }
     ## compute ylim to include band if needed
     if (is.null(ylim)) {
       y.all <- yy
@@ -292,12 +566,15 @@ plot.tune.treesize.rhf <- function(x,
         y.all <- c(y.all, yl, yu)
       }
       y.all <- y.all[is.finite(y.all)]
-      if (length(y.all)) {
-        ymin <- min(y.all)
-        ymax <- max(y.all)
-        pad  <- 0.05 * (ymax - ymin)
-        ylim <- c(ymin - pad, ymax + pad)
+      ymin <- min(y.all)
+      ymax <- max(y.all)
+      span <- ymax - ymin
+      pad <- if (is.finite(span) && span > 0) {
+        0.05 * span
+      } else {
+        0.05 * max(1, abs(ymin))
       }
+      ylim <- c(ymin - pad, ymax + pad)
     }
     plot(xx, yy, type = "p", pch = 16,
          xlab = "treesize", ylab = ylab, main = main,
@@ -346,13 +623,21 @@ plot.tune.treesize.rhf <- function(x,
     yy <- path$risk
     if (is.null(ylab)) ylab <- "OOB empirical risk"
     if (is.null(main)) main <- "Tuning treesize by OOB risk"
+    if (!any(is.finite(yy))) {
+      stop("No finite OOB-risk values are available for plotting.",
+           call. = FALSE)
+    }
     if (is.null(ylim)) {
       y.all <- yy[is.finite(yy)]
-      if (length(y.all)) {
-        ymin <- min(y.all); ymax <- max(y.all)
-        pad  <- 0.05 * (ymax - ymin)
-        ylim <- c(ymin - pad, ymax + pad)
+      ymin <- min(y.all)
+      ymax <- max(y.all)
+      span <- ymax - ymin
+      pad <- if (is.finite(span) && span > 0) {
+        0.05 * span
+      } else {
+        0.05 * max(1, abs(ymin))
       }
+      ylim <- c(ymin - pad, ymax + pad)
     }
     plot(xx, yy, type = "p", pch = 16,
          xlab = "treesize", ylab = ylab, main = main,

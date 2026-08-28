@@ -210,7 +210,7 @@ void stackTNQualitativeObjectsForestPtr(char mode,
         tTermBase = RF_tTermList[treeID][k];
         tTerm     = (Terminal *) tTermBase; 
         (*pSG_imbrTNodeID_ptr)[treeID][k] = sexp_imbrTNodeID_ + offsetID_imbr;
-        offsetID_imbr += tTerm -> repMembrCount;
+        offsetID_imbr += tTerm -> ibgMembrCount;
       }
       localSize += SG_ibgSizeCase[treeID];
     }
@@ -383,20 +383,113 @@ void stackTNQuantitativeObjects(char mode,
 void writeTNQuantitativeObjectsOutput(char mode,
                                       double ***termNelsonAalenPtr,
                                       double ***termHazardPtr) {
+  TerminalBase *tTermBase;
+  TerminalSurvival *sTerm;
   uint treeID;
   uint j, k;
   if (RF_optHigh & OPT_TERM_OUTG) {
     for (treeID = 1; treeID <= RF_ntree; treeID ++) {
-      TerminalBase *tTermBase;
-      TerminalSurvival *sTerm;
       for (k = 1; k <= RF_tLeafCount[treeID]; k++) {
         tTermBase = RF_tTermList[treeID][k];
         sTerm = tTermBase -> survivalBase;
-        for (j = 1; j <= RF_sortedTimeInterestSize; j++) {
+        for (j = 1; j <= sTerm -> sTimeSize; j++) {
           termNelsonAalenPtr[treeID][k][j] = sTerm -> nelsonAalen[j];
         }
-        for (j = 1; j <= RF_sortedTimeInterestSize; j++) {
+        for (j = 1; j <= sTerm -> sTimeSize; j++) {
           termHazardPtr[treeID][k][j] = sTerm -> hazard[j];
+        }
+      }
+    }
+  }
+}
+void stackTNNodeTimeObjects(char mode,
+                            double **pSG_nodeU_,
+                            double **pSG_nodeV_,
+                            double **pSG_nodeCOE_,
+                            double **pSG_nodeCumulativeCOE_,
+                            double ****pSG_nodeU_ptr,
+                            double ****pSG_nodeV_ptr,
+                            double ****pSG_nodeCOE_ptr,
+                            double ****pSG_nodeCumulativeCOE_ptr) {
+  ulong localSize;
+  if (RF_optHigh & OPT_TERM_OUTG) {
+    localSize = (ulong) RF_totalTermCount * RF_sortedTimeInterestSize;
+    *pSG_nodeU_ = (double*) stackAndProtect(RF_auxDimConsts,
+                                            mode,
+                                            &RF_nativeIndex,
+                                            NATIVE_TYPE_NUMERIC,
+                                            SG_NODE_U,
+                                            localSize,
+                                            0.0,
+                                            SG_sexpStringOutgoing,
+                                            pSG_nodeU_ptr,
+                                            3,
+                                            RF_ntree,
+                                            -2,
+                                            RF_sortedTimeInterestSize);
+    *pSG_nodeV_ = (double*) stackAndProtect(RF_auxDimConsts,
+                                            mode,
+                                            &RF_nativeIndex,
+                                            NATIVE_TYPE_NUMERIC,
+                                            SG_NODE_V,
+                                            localSize,
+                                            0.0,
+                                            SG_sexpStringOutgoing,
+                                            pSG_nodeV_ptr,
+                                            3,
+                                            RF_ntree,
+                                            -2,
+                                            RF_sortedTimeInterestSize);
+    *pSG_nodeCOE_ = (double*) stackAndProtect(RF_auxDimConsts,
+                                              mode,
+                                              &RF_nativeIndex,
+                                              NATIVE_TYPE_NUMERIC,
+                                              SG_NODE_COE,
+                                              localSize,
+                                              RF_nativeNaN,
+                                              SG_sexpStringOutgoing,
+                                              pSG_nodeCOE_ptr,
+                                              3,
+                                              RF_ntree,
+                                              -2,
+                                              RF_sortedTimeInterestSize);
+    *pSG_nodeCumulativeCOE_ = (double*) stackAndProtect(RF_auxDimConsts,
+                                                      mode,
+                                                      &RF_nativeIndex,
+                                                      NATIVE_TYPE_NUMERIC,
+                                                      SG_NODE_CUMULATIVE_COE,
+                                                      localSize,
+                                                      0.0,
+                                                      SG_sexpStringOutgoing,
+                                                      pSG_nodeCumulativeCOE_ptr,
+                                                      3,
+                                                      RF_ntree,
+                                                      -2,
+                                                      RF_sortedTimeInterestSize);
+  }
+}
+void writeTNNodeTimeObjects(char mode,
+                            double ***nodeUPtr,
+                            double ***nodeVPtr,
+                            double ***nodeCOEPtr,
+                            double ***nodeCumulativeCOEPtr) {
+  Terminal *tTerm;
+  TerminalBase *tTermBase;
+  TerminalSurvival *sTerm;
+  uint treeID;
+  uint termID;
+  uint timeIndex;
+  if (RF_optHigh & OPT_TERM_OUTG) {
+    for (treeID = 1; treeID <= RF_ntree; treeID++) {
+      for (termID = 1; termID <= RF_tLeafCount[treeID]; termID++) {
+        tTerm = (Terminal *) RF_tTermList[treeID][termID];
+        tTermBase = RF_tTermList[treeID][termID];
+        sTerm = tTermBase -> survivalBase;
+        for (timeIndex = 1; timeIndex <= sTerm -> sTimeSize; timeIndex++) {
+          nodeVPtr[treeID][termID][timeIndex] = tTerm -> nodeV[timeIndex]; 
+          nodeUPtr[treeID][termID][timeIndex] = tTerm -> nodeU[timeIndex]; 
+          nodeCOEPtr[treeID][termID][timeIndex] = tTerm -> coeHazard[timeIndex]; 
+          nodeCumulativeCOEPtr[treeID][termID][timeIndex] = tTerm -> coeCHF[timeIndex];
         }
       }
     }

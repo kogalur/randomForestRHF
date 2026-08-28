@@ -58,19 +58,19 @@ static inline double overlap_len(double s, double e, double left, double right) 
   return (d > 0.0) ? d : 0.0;
 }
 SEXP weightedStitchedHazard(SEXP idSEXP,
-                           SEXP startSEXP,
-                           SEXP stopSEXP,
-                           SEXP eventSEXP,
-                           SEXP timeSEXP,
-                           SEXP inbagSEXP,
-                           SEXP leafCountSEXP,
-                           SEXP timbrCaseCtSEXP,
-                           SEXP timbrCaseIdSEXP,
-                           SEXP tombrCaseCtSEXP,
-                           SEXP tombrCaseIdSEXP,
-                           SEXP tHazardSEXP,
-                           SEXP weightModeSEXP,
-                           SEXP betaScaleSEXP) {
+                            SEXP startSEXP,
+                            SEXP stopSEXP,
+                            SEXP eventSEXP,
+                            SEXP timeSEXP,
+                            SEXP inbagSEXP,
+                            SEXP leafCountSEXP,
+                            SEXP timbrCaseCtSEXP,
+                            SEXP timbrCaseIdSEXP,
+                            SEXP tombrCaseCtSEXP,
+                            SEXP tombrCaseIdSEXP,
+                            SEXP tHazardSEXP,
+                            SEXP weightModeSEXP,
+                            SEXP betaScaleSEXP) {
   if (!isInteger(idSEXP))    error("id must be integer.");
   if (!isReal(startSEXP))    error("start must be numeric (double).");
   if (!isReal(stopSEXP))     error("stop must be numeric (double).");

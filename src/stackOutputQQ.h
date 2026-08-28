@@ -52,4 +52,23 @@ void restoreTNQualitativeObjectsInput(char mode,
                                       uint ***rmbrTNodeID,
                                       uint ***imbrTNodeID,
                                       uint ***ombrTNodeID);
+void stackTNNodeTimeObjects(char mode,
+                            double **pSG_nodeU_,
+                            double **pSG_nodeV_,
+                            double **pSG_nodeCOE_,
+                            double **pSG_nodeCumulativeCOE_,
+                            double ****pSG_nodeU_ptr,
+                            double ****pSG_nodeV_ptr,
+                            double ****pSG_nodeCOE_ptr,
+                            double ****pSG_nodeCumulativeCOE_ptr);
+void writeTNNodeTimeObjects(char mode,
+                            double ***nodeUPtr,
+                            double ***nodeVPtr,
+                            double ***nodeCOEPtr,
+                            double ***nodeCumulativeCOEPtr);
+void writeTNNodeTimeObjectsNew(char mode,
+                               double ***nodeUPtr,
+                               double ***nodeVPtr,
+                               double ***nodeCOEPtr,
+                               double ***nodeCumulativeCOEPtr);
 #endif

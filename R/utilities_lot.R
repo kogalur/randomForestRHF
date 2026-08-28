@@ -1,21 +1,11 @@
 get.lot <- function(hcut = 1,
-                    treesize = NULL,
                     tune = TRUE,
                     lag = NULL,
                     strikeout = NULL,
                     max.two   = NULL,
                     max.three = NULL,
                     max.four  = NULL) {
-  if (is.null(treesize) || (!is.function(treesize) && !is.numeric(treesize))) {
-    treesize <- function(n, tdc) {
-      if (tdc) {
-        min(30, n / 5)
-      }
-      else {
-        max(100, n / 5)
-      }
-    }
-  }
+  ## legacy: plays no role here
   if (is.null(lag)) {
     lag <- 50
   }
@@ -34,8 +24,8 @@ get.lot <- function(hcut = 1,
   if (is.null(max.four)) {
     max.four <- 30
   }
+  ## return the object: key is treesize
   list(hcut = as.integer(hcut),  
-       treesize = ifelse(is.numeric(treesize), as.integer(treesize), treesize),
        lag = as.integer(lag),
        strikeout = as.integer(strikeout),
        max.two = as.integer(max.two),
@@ -50,12 +40,12 @@ get.splitinfo <- function(formula.detail, splitrule, nsplit) {
                        "cart.regr",           ##  3
                        "cart.class",          ##  4
                        "cart.random",         ##  5
-                       "sg.tdc",              ##  6
-                       "sg.nelson.aalen")     ##  7  
+                       "hazard.loglik",          ##  6
+                       "hazard.nelson.aalen")    ##  7  
   ## set the split rule
   ## Note no error checking for now. TBD
   if (is.null(splitrule)) {
-      splitrule <- "sg.tdc"
+      splitrule <- "hazard.loglik"
   }
   splitrule.idx <- which(splitrule.names == splitrule)
   if (length(splitrule.idx) == 0) {

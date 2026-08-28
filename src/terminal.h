@@ -8,5 +8,9 @@ struct terminal {
   uint allMembrSize;
   uint *repMembrIndx, *ibgMembrIndx, *oobMembrIndx, *tstMembrIndx;
   double *ratio;
+  double *nodeU;
+  double *nodeV;
+  double *coeHazard;
+  double *coeCHF;
 };
 #endif

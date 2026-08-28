@@ -11,7 +11,7 @@ importFrom("graphics", "matplot", "boxplot", "abline", "polygon")
 
 
 importFrom("stats", "runif", "as.formula", "formula", "na.omit", "model.matrix", "sd", "var", "supsmu")
-importFrom("stats", "quantile", "rbinom", "setNames", "lowess", "uniroot")
+importFrom("stats", "quantile", "rbinom", "rnorm", "setNames", "lowess", "uniroot")
 importFrom("stats", "complete.cases")
 importFrom("stats", "plogis")
 
