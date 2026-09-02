@@ -4,7 +4,7 @@
 
 \description{
   Obtain predicted values on test data using a trained random hazard
-  forests.
+  forest, or restore predictions for its original training data.
 }
 
 \usage{\method{predict}{rhf}(object, newdata,  get.tree = NULL,
@@ -17,8 +17,13 @@
     call to \code{rhf}.}
   
 
-  \item{newdata}{Test data frame. If omitted, the original training data
-    is used and the full training forest is restored.}
+  \item{newdata}{Test data frame. For a forest grown from ordinary
+    \code{Surv(time, event)} input, \code{newdata} may be supplied in
+    the same ordinary survival format using the original time and event
+    column names. For a forest grown from counting-process input,
+    \code{newdata} uses \code{Surv(id, start, stop, event)} columns as
+    in the training data. If omitted, the original training data are
+    used and the full training forest is restored.}
   
 
   \item{get.tree}{Optional vector of integer indices specifying which
@@ -58,16 +63,31 @@
 
 \details{
 
-  Returns the predicted values for a random hazard forests.
+  For a forest grown directly from \code{Surv(time, event)} data,
+  \code{predict.rhf()} retains the original response names from the
+  training call. When both response columns are present in
+  \code{newdata}, each test row is converted internally to one interval
+  with \code{start = 0}, \code{stop = time}, and the supplied event
+  indicator. This gives the same test-data representation that would
+  have been obtained by calling \code{convert.counting()} explicitly.
+  The time and event columns must be either both present or both absent.
+  When both are absent, prediction can still return terminal membership
+  and training-derived node summaries, but case-specific test hazard and
+  cumulative-hazard trajectories are not assembled because no test
+  follow-up interval has been supplied.
+
+  Forests grown from \code{Surv(id, start, stop, event)} data retain the
+  existing counting-process prediction interface. In either format,
+  predictor names must match those used to grow the forest.
 
   Prediction inherits the hazard calculation configuration saved with
   the trained forest. In ordinary test-data prediction there is no OOB
-  objective for reselecting the trim value, so the grow-time
-  selected index is used. In restore mode, the stored forest can
-  reconstruct OOB quantities and may reselect the trim value over the
-  active candidate grid. Setting \code{adaptive = FALSE} changes that
-  grid to the single value \code{0.05}, unless \code{coe.trim} is
-  supplied through \code{...}.
+  objective for reselecting the trim value, so the grow-time selected
+  index is used. In restore mode, the stored forest can reconstruct OOB
+  quantities and may reselect the trim value over the active candidate
+  grid. Setting \code{adaptive = FALSE} changes that grid to the single
+  value \code{0.05}, unless \code{coe.trim} is supplied through
+  \code{...}.
   
 }
 
@@ -86,6 +106,8 @@ evaluation grid \code{time.interest}. Important components include:
     \code{int.haz.inbag}: in-bag summaries when available.
   \item \code{id}, \code{yvar}, and \code{xvar}: identifiers and processed
     outcome/predictor data used by the returned prediction object.
+  \item \code{event.process} and \code{input.info}: the trained event-process
+    classification and the original survival-input format and response map.
   \item \code{pseudo.membership} and \code{inbag}: terminal-node membership
     and inbag information when \code{membership = TRUE}.
   \item \code{forest}: the fitted forest object used to generate the
@@ -160,17 +182,22 @@ p.fixed <- predict(o, tst, adaptive = FALSE)
 library("randomForestSRC")
 data(pbc, package = "randomForestSRC")
 pbc.raw <- na.omit(pbc)
-trn <- sample(1:nrow(pbc.raw), size=nrow(pbc.raw) * .75, replace = FALSE)
+set.seed(7)
+trn <- sample(
+  seq_len(nrow(pbc.raw)),
+  size = floor(nrow(pbc.raw) * .75),
+  replace = FALSE
+)
 
-d.trn <- convert.counting(Surv(days, status) ~ ., pbc.raw[trn,])
-d.tst <- convert.counting(Surv(days, status) ~ ., pbc.raw[-trn,])
-f <- "Surv(id, start, stop, event) ~ ."
+pbc.trn <- pbc.raw[trn, , drop = FALSE]
+pbc.tst <- pbc.raw[-trn, , drop = FALSE]
+f <- Surv(days, status) ~ .
 
-## train/predict
-o <- rhf(f, d.trn)
-print(predict(o, d.tst))
+## train and predict directly with ordinary right-censored data
+o <- rhf(f, pbc.trn)
+print(predict(o, pbc.tst))
 
-## restore the forest
+## restore the training forest
 print(predict(o))
 
 }

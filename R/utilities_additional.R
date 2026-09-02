@@ -531,6 +531,23 @@ is.bit <- function(value, bit) {
   m <- bitwShiftL(1L, as.integer(bit))          # mask for the requested bit
   bitwAnd(v, m) != 0L                           # TRUE if bit set, FALSE otherwise (NA propagates)
 }
+## Right censored flag:
+is.hidden.rc <-  function(dots) {
+  if (is.null(dots$right.censored)) {
+    FALSE
+  }
+  else {
+    as.logical(as.character(dots$right.censored))
+  }
+}
+get.rc.bits <- function(right.censored) {
+  if (right.censored) {
+    bits <- 2^9
+  } else {
+    bits <- 0
+  }
+  return (bits)
+}
 ## Real time predicton option:
 is.hidden.rt <-  function(dots) {
   if (is.null(dots$real.time)) {

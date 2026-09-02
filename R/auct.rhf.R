@@ -2,7 +2,7 @@
 ##
 ## main wrapper function
 ##
-## Incident-marker revision: 2026-08-25.3
+## Marker revisions: incident 2026-08-25.3; cumulative 2026-08-27.2
 ##
 ##########################################################################
 auct.rhf <- function(object,
@@ -56,8 +56,25 @@ auct.rhf <- function(object,
   )
   if (is.null(marker.object))
     stop("Requested marker matrix is missing in RHF object.")
-  Z <- as.matrix(marker.object$value)
-  Z <- Z[, keep.time, drop = FALSE]
+  ## Public hazard.* and chf.* outputs obey the supplied subject path.  For
+  ## cumulative/dynamic AUC, however, cases who failed before t and controls
+  ## still at risk at t require a common-time marker.  Reconstruct the
+  ## historical AUC-only marker by applying the fitted forest aggregation
+  ## pointwise to hazard.tree.* or chf.tree.*.  The public path-domain outputs
+  ## are never modified.
+  cumulative.marker <- NULL
+  if (identical(method, "cumulative")) {
+    cumulative.marker <- .rhf.auct.cumulative.marker(
+      object = object,
+      marker = marker,
+      ensemble = marker.object$ensemble,
+      keep.time = keep.time
+    )
+    Z <- cumulative.marker$marker
+  } else {
+    Z <- as.matrix(marker.object$value)
+    Z <- Z[, keep.time, drop = FALSE]
+  }
   ## --- 2) Outcomes and subject alignment (RHF-specific extraction) ---
   YY <- if (is.null(object$id) || is.null(object$yvar)) {
     if (is.null(ydata))
@@ -535,6 +552,7 @@ auct.rhf <- function(object,
     winsor.q     = winsor.q,
     times        = times,
     diag.riskset = diag.riskset,
+    cumulative.marker = if (is.null(cumulative.marker)) NULL else cumulative.marker$diagnostic,
     incident.marker = if (is.null(incident.marker)) NULL else incident.marker$diagnostic
   ), class = "auct.rhf")
 }
@@ -984,6 +1002,71 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
 }
 ##########################################################################
 ##
+## RHF cumulative/dynamic AUC marker
+##
+## Public hazard.* and chf.* outputs obey the supplied subject path.  A
+## cumulative/dynamic comparison at time t instead requires the requested
+## marker at that same t for cases who failed before t and controls who remain
+## event-free at t.  RHF historically supplied the pointwise fitted aggregate
+## of the corresponding raw tree array.  Reconstruct that full-grid marker
+## only for AUC; never replace or modify the public path-domain outputs.
+##
+##########################################################################
+.rhf.auct.cumulative.marker <- function(object, marker, ensemble, keep.time) {
+  marker <- match.arg(marker, c("cumhaz", "hazard"))
+  tree.prefix <- if (identical(marker, "cumhaz")) "chf.tree." else "hazard.tree."
+  tree.name <- paste0(tree.prefix, ensemble)
+  tree <- object[[tree.name]]
+  tree.dim <- dim(tree)
+  if (is.null(tree) || length(tree.dim) != 3L) {
+    stop(
+      "Cumulative/dynamic AUC with marker = '", marker,
+      "' requires the retained raw tree array `", tree.name, "`. ",
+      "The public path-domain marker is not a common-time cumulative-AUC marker.",
+      call. = FALSE
+    )
+  }
+  if (length(keep.time) != tree.dim[[2L]]) {
+    stop("The AUC tree-marker array does not match time.interest.",
+         call. = FALSE)
+  }
+  options <- .rhf.auct.aggregation.options(object)
+  if (is.null(options)) {
+    stop(
+      "Unable to resolve the fitted RHF ensemble aggregation rule for cumulative AUC.",
+      call. = FALSE
+    )
+  }
+  kept <- which(keep.time)
+  answer <- matrix(
+    NA_real_,
+    nrow = tree.dim[[1L]],
+    ncol = length(kept),
+    dimnames = list(
+      if (!is.null(dimnames(tree))) dimnames(tree)[[1L]] else NULL,
+      if (!is.null(dimnames(tree))) dimnames(tree)[[2L]][kept] else NULL
+    )
+  )
+  for (i in seq_len(tree.dim[[1L]])) {
+    for (jj in seq_along(kept)) {
+      k <- kept[[jj]]
+      answer[i, jj] <- .rhf.auct.aggregate(tree[i, k, ], options)
+    }
+  }
+  list(
+    marker = answer,
+    diagnostic = list(
+      marker = marker,
+      ensemble = ensemble,
+      source = tree.name,
+      aggregate = options$rule,
+      trim = options$trim,
+      full.grid = TRUE
+    )
+  )
+}
+##########################################################################
+##
 ## RHF incident-hazard marker restoration
 ##
 ## Public hazard matrices are NA outside each subject's path. For an off-grid
@@ -1028,7 +1111,7 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
     call. = FALSE
   )
 }
-.rhf.incident.coe.options <- function(object) {
+.rhf.auct.aggregation.options <- function(object) {
   config <- object$hazard.config
   if (!is.list(config) &&
       is.list(object$forest) &&
@@ -1036,6 +1119,11 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
     config <- object$forest$parms$hazard.config
   }
   if (!is.list(config)) return(NULL)
+  estimator <- config$hazard.estimator
+  if (!is.null(estimator) && length(estimator) &&
+      identical(as.character(estimator[[1L]]), "NA")) {
+    return(list(rule = "mean", trim = NA_real_, estimator = "NA"))
+  }
   rule <- config$coe.aggregate.selected
   if (is.null(rule) || !length(rule) || is.na(rule[[1L]])) {
     rule <- config$coe.aggregate
@@ -1062,10 +1150,17 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
       }
     }
     if (!is.finite(trim) || trim < 0 || trim > 0.5) return(NULL)
+    ## The 0.50 endpoint is the exact median under the RHF aggregation
+    ## contract, regardless of whether it arrived through a scalar or a
+    ## selected candidate value.
+    if (trim >= 0.5) {
+      rule <- "median"
+      trim <- NA_real_
+    }
   }
-  list(rule = rule, trim = trim)
+  list(rule = rule, trim = trim, estimator = "COE")
 }
-.rhf.incident.aggregate <- function(value, options) {
+.rhf.auct.aggregate <- function(value, options) {
   value <- as.double(value)
   value <- value[is.finite(value)]
   if (!length(value) || is.null(options)) return(NA_real_)
@@ -1093,7 +1188,7 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
   restored <- rep(FALSE, length(missing))
   if (!any(missing)) return(list(marker = Z, restored = restored))
   tree <- object[[paste0("hazard.tree.", ensemble)]]
-  options <- .rhf.incident.coe.options(object)
+  options <- .rhf.auct.aggregation.options(object)
   tree.dim <- dim(tree)
   kept.cell <- which(keep.time)
   if (is.null(tree) ||
@@ -1111,7 +1206,7 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
     i <- event.subject[[j]]
     k <- event.cell[[j]]
     full.k <- kept.cell[[k]]
-    value <- .rhf.incident.aggregate(tree[i, full.k, ], options)
+    value <- .rhf.auct.aggregate(tree[i, full.k, ], options)
     if (is.finite(value)) {
       Z[i, k] <- value
       restored[[j]] <- TRUE

@@ -8,6 +8,7 @@ predict.rhf <- function(object,
                         do.trace = FALSE,
                         ...)
 {
+  has.newdata <- !missing(newdata)
   adaptive <- get.adaptive(adaptive)
   dots <- list(...)
   ## Prefer the forest-level training configuration.  The main object-level
@@ -22,8 +23,15 @@ predict.rhf <- function(object,
     adaptive = adaptive
   )
   dots[names(hazard.options)] <- hazard.options
+  ## A forest grown from ordinary Surv(time, event) data retains the original
+  ## response names.  Convert raw test data to the same private one-interval
+  ## counting-process representation used during growth.  Counting-process
+  ## forests and older objects retain the historical newdata contract.
+  if (has.newdata) {
+    newdata <- .rhf.prepare.newdata(object, newdata)
+  }
   args <- c(list(object = object),
-            if (!missing(newdata)) list(newdata = newdata),
+            if (has.newdata) list(newdata = newdata),
             list(get.tree = get.tree,
                  block.size = block.size,
                  membership = membership,

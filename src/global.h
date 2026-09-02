@@ -9,6 +9,7 @@
 #define SG_OPT_SWTCH_SIX    0x00000040 
 #define SG_OPT_SWTCH_SEVEN  0x00000080 
 #define SG_OPT_REAL_TIME    0x00000100 
+#define SG_OPT_RIGHT_CENS   0x00000200 
 #define SG_OPT_WMODE        0x00030000 
 #define REGR_CDL     1
 #define CLAS_CDL     2

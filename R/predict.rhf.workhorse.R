@@ -12,6 +12,29 @@ predict.rhf.workhorse <-  function(object,
   if (!inherits(object, "rhf")) {
     stop("this function only works for objects of class 'rhf'")
   }
+  ## Retain the public input contract and trained event-process mode before the
+  ## main object is replaced below by its forest component.
+  input.info <- object$input.info
+  if (is.null(input.info) && !is.null(object$forest)) {
+    input.info <- object$forest$input.info
+  }
+  if (is.null(input.info) &&
+      !is.null(object$forest) &&
+      !is.null(object$forest$parms)) {
+    input.info <- object$forest$parms$input.info
+  }
+  ## Inherit the public time-domain contract from the fitted object; do not
+  ## re-infer it from newdata.
+  right.censored <- identical(input.info$format, "right-censored")
+  right.censored.bits <- get.rc.bits(right.censored)
+  event.process <- object$event.process
+  if (is.null(event.process) && !is.null(object$forest)) {
+    event.process <- object$forest$event.process
+  }
+  if (is.null(event.process)) {
+    event.process <- "auto"
+  }
+  event.process <- .rhf.match.event.process(event.process)
   ## hidden options (used later)
   dots <- list(...)
   adaptive <- get.adaptive(adaptive)
@@ -66,6 +89,10 @@ predict.rhf.workhorse <-  function(object,
   subj.unique.count <- length(unique(subj))
   case.wt  <- get.weight(NULL, subj.unique.count)
   event.info <- object$event.info
+  if (identical(event.process, "auto") &&
+      !is.null(event.info$event.process)) {
+    event.process <- .rhf.match.event.process(event.info$event.process)
+  }
   ## get time-map information
   max.time <- object$max.time 
   time.map <- object$time.map
@@ -125,7 +152,7 @@ predict.rhf.workhorse <-  function(object,
   }
   else {
     object.version <- as.integer(unlist(strsplit(object$version, "[.]")))
-    installed.version <- as.integer(unlist(strsplit("2.0.0", "[.]")))
+    installed.version <- as.integer(unlist(strsplit("2.0.3", "[.]")))
     minimum.version <- as.integer(unlist(strsplit("0.0.0.0", "[.]")))
     object.version.adj <- object.version[1] + (object.version[2]/10) + (object.version[3]/100)
     installed.version.adj <- installed.version[1] + (installed.version[2]/10) + (installed.version[3]/100)
@@ -159,7 +186,11 @@ predict.rhf.workhorse <-  function(object,
                                    yvar.names = yvar.names,
                                    subj.names = subj.names,
                                    time.map   = time.map,
-                                   max.time   = max.time)
+                                   max.time   = max.time,
+                                   event.process = event.process)
+    if (!is.null(nd$event.process)) {
+      event.process <- nd$event.process
+    }
     ## overwrite with cleaned version
     newdata   <- nd$newdata
     n.newdata <- nrow(newdata)
@@ -255,7 +286,8 @@ predict.rhf.workhorse <-  function(object,
                                   as.integer(membership.bits +  ## high option word
                                              2^19 + 2^18 +      ## TERM_INCG and TERM_OUTG
                                              samptype.bits),
-                                  as.integer(experimental.bits),  ## rhf (local and experimental) option word
+                                  as.integer(experimental.bits +
+                                             right.censored.bits),  ## rhf (local and experimental) option word
                                   as.integer(ntree),
                                   as.integer(object$n),
                                   list(as.integer(subj.unique.count),
@@ -670,6 +702,8 @@ predict.rhf.workhorse <-  function(object,
   rhfOutput <- list(
     forest = object,
     family = family,
+    event.process = event.process,
+    input.info = input.info,
     n = n.observed,
     ntree = ntree,
     yvar = if (restore.mode) {

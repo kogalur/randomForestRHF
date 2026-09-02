@@ -213,6 +213,254 @@ default.treesize <- function(ndead,
 ## TDC Helper Functions
 ##
 ####################################################################
+## Internal formula/data normalization for the public RHF interfaces.
+## The workhorses continue to receive only the canonical four-argument
+## counting-process response Surv(id, start, stop, event).
+.rhf.deparse1 <- function(x) {
+  paste(deparse(x, width.cutoff = 500L), collapse = "")
+}
+.rhf.make.internal.names <- function(existing,
+                                     roots = c(".rhf.id",
+                                               ".rhf.start",
+                                               ".rhf.stop",
+                                               ".rhf.event")) {
+  existing <- as.character(existing)
+  out <- character(length(roots))
+  used <- existing
+  for (j in seq_along(roots)) {
+    candidate <- roots[j]
+    suffix <- 0L
+    while (candidate %in% used) {
+      suffix <- suffix + 1L
+      candidate <- paste0(roots[j], ".", suffix)
+    }
+    out[j] <- candidate
+    used <- c(used, candidate)
+  }
+  names(out) <- c("id", "start", "stop", "event")
+  out
+}
+.rhf.coerce.right.time <- function(x, what = "time") {
+  x.na <- is.na(x)
+  if (is.factor(x)) {
+    out <- suppressWarnings(as.numeric(as.character(x)))
+  }
+  else {
+    out <- suppressWarnings(as.numeric(x))
+  }
+  bad.coercion <- is.na(out) & !x.na
+  if (any(bad.coercion)) {
+    stop("The ", what, " variable could not be converted to numeric values.",
+         call. = FALSE)
+  }
+  if (any(!is.finite(out) & !is.na(out))) {
+    stop("The ", what, " variable must contain finite values or NA.",
+         call. = FALSE)
+  }
+  if (any(out < 0, na.rm = TRUE)) {
+    stop("The ", what, " variable cannot contain negative values.",
+         call. = FALSE)
+  }
+  out
+}
+.rhf.prepare.input <- function(formula, data) {
+  if (missing(formula) || is.null(formula)) {
+    stop("Argument 'formula' must be supplied.", call. = FALSE)
+  }
+  if (missing(data) || is.null(data)) {
+    stop("Argument 'data' must be supplied.", call. = FALSE)
+  }
+  if (!is.data.frame(data)) {
+    data <- as.data.frame(data)
+  }
+  f <- as.formula(formula)
+  if (length(f) != 3L) {
+    stop("RHF requires a two-sided model formula.", call. = FALSE)
+  }
+  lhs <- f[[2L]]
+  if (!is.call(lhs) || !identical(as.character(lhs[[1L]]), "Surv")) {
+    stop("The left-hand side of 'formula' must be a Surv(...) call.",
+         call. = FALSE)
+  }
+  response.args <- as.list(lhs)[-1L]
+  ## Existing RHF counting-process interface.  Return it unchanged so the
+  ## current workhorse remains the sole implementation for model fitting.
+  if (length(response.args) == 4L) {
+    response.names <- vapply(
+      response.args,
+      function(z) if (is.symbol(z)) as.character(z) else .rhf.deparse1(z),
+      character(1L)
+    )
+    names(response.names) <- c("id", "start", "stop", "event")
+    missing.response <- setdiff(unname(response.names), names(data))
+    if (length(missing.response)) {
+      stop("The following response variable(s) are missing from 'data': ",
+           paste(missing.response, collapse = ", "),
+           call. = FALSE)
+    }
+    return(list(
+      formula = f,
+      data = data,
+      info = list(
+        version = 1L,
+        format = "counting",
+        response.names = response.names,
+        internal.names = response.names,
+        n.original = nrow(data)
+      )
+    ))
+  }
+  if (length(response.args) == 3L) {
+    stop(
+      "RHF counting-process input requires an explicit subject identifier: ",
+      "use Surv(id, start, stop, event), not Surv(start, stop, event).",
+      call. = FALSE
+    )
+  }
+  if (length(response.args) != 2L) {
+    stop(
+      "RHF accepts either Surv(time, event) for ordinary right-censored data ",
+      "or Surv(id, start, stop, event) for counting-process data.",
+      call. = FALSE
+    )
+  }
+  ## For ordinary survival input, require direct column references.  This
+  ## keeps the stored response map compact and allows raw test data to be
+  ## converted later using the same original column names.
+  simple.response <- vapply(response.args, is.symbol, logical(1L))
+  if (!all(simple.response)) {
+    stop(
+      "The time and event arguments in Surv(time, event) must each be a ",
+      "column name in 'data'.",
+      call. = FALSE
+    )
+  }
+  response.names <- vapply(response.args, as.character, character(1L))
+  names(response.names) <- c("time", "event")
+  missing.response <- setdiff(unname(response.names), names(data))
+  if (length(missing.response)) {
+    stop("The following response variable(s) are missing from 'data': ",
+         paste(missing.response, collapse = ", "),
+         call. = FALSE)
+  }
+  if (identical(response.names[["time"]], response.names[["event"]])) {
+    stop("The time and event variables in Surv(time, event) must be distinct.",
+         call. = FALSE)
+  }
+  time <- .rhf.coerce.right.time(
+    data[[response.names[["time"]]]],
+    what = response.names[["time"]]
+  )
+  internal.names <- .rhf.make.internal.names(
+    c(names(data), all.vars(f[[3L]]))
+  )
+  internal.data <- data
+  internal.data[[internal.names[["id"]]]] <- seq_len(nrow(internal.data))
+  internal.data[[internal.names[["start"]]]] <- rep(0, nrow(internal.data))
+  internal.data[[internal.names[["stop"]]]] <- time
+  internal.data[[internal.names[["event"]]]] <-
+    internal.data[[response.names[["event"]]]]
+  ## A two-column right-censored response is necessarily a terminal-event
+  ## representation.  cleanup.counting() will still perform the full binary
+  ## event and interval validation used by the canonical RHF path.
+  attr(internal.data, "event.process") <- "terminal"
+  ## Resolve '.' against the original formula and data before replacing the
+  ## response.  This prevents the original time and event columns from entering
+  ## the predictor set merely because the internal response uses new names.
+  formula.terms <- tryCatch(
+    stats::terms(f, data = data),
+    error = function(e) {
+      stop("Unable to process 'formula': ", conditionMessage(e),
+           call. = FALSE)
+    }
+  )
+  term.labels <- attr(formula.terms, "term.labels")
+  intercept <- attr(formula.terms, "intercept")
+  internal.response <- paste0(
+    "Surv(",
+    paste(unname(internal.names), collapse = ", "),
+    ")"
+  )
+  internal.formula <- stats::reformulate(
+    termlabels = term.labels,
+    response = internal.response,
+    intercept = intercept,
+    env = environment(f)
+  )
+  list(
+    formula = internal.formula,
+    data = internal.data,
+    info = list(
+      version = 1L,
+      format = "right-censored",
+      response.names = response.names,
+      internal.names = internal.names,
+      n.original = nrow(data)
+    )
+  )
+}
+.rhf.prepare.newdata <- function(object, newdata) {
+  if (missing(newdata) || is.null(newdata)) {
+    stop("Argument 'newdata' must be a non-null data.frame.", call. = FALSE)
+  }
+  if (!is.data.frame(newdata)) {
+    newdata <- as.data.frame(newdata)
+  }
+  input.info <- object$input.info
+  if (is.null(input.info) && !is.null(object$forest)) {
+    input.info <- object$forest$input.info
+  }
+  if (is.null(input.info) &&
+      !is.null(object$forest) &&
+      !is.null(object$forest$parms)) {
+    input.info <- object$forest$parms$input.info
+  }
+  ## Older RHF objects and forests grown directly from counting-process data
+  ## retain the historical newdata contract.
+  if (is.null(input.info) ||
+      is.null(input.info$format) ||
+      identical(input.info$format, "counting")) {
+    return(newdata)
+  }
+  if (!identical(input.info$format, "right-censored")) {
+    stop("The fitted RHF object contains an unrecognized input format.",
+         call. = FALSE)
+  }
+  response.names <- input.info$response.names
+  internal.names <- input.info$internal.names
+  required.response <- c("time", "event")
+  required.internal <- c("id", "start", "stop", "event")
+  if (!all(required.response %in% names(response.names)) ||
+      !all(required.internal %in% names(internal.names))) {
+    stop("The fitted RHF object contains incomplete survival-input metadata.",
+         call. = FALSE)
+  }
+  time.name <- unname(response.names[["time"]])
+  event.name <- unname(response.names[["event"]])
+  has.time <- time.name %in% names(newdata)
+  has.event <- event.name %in% names(newdata)
+  if (xor(has.time, has.event)) {
+    stop(
+      "For a forest grown from Surv(time, event), 'newdata' must contain ",
+      "both original response variables ('", time.name, "' and '",
+      event.name, "') or neither.",
+      call. = FALSE
+    )
+  }
+  internal.data <- newdata
+  internal.data[[internal.names[["id"]]]] <- seq_len(nrow(internal.data))
+  if (has.time && has.event) {
+    time <- .rhf.coerce.right.time(
+      internal.data[[time.name]],
+      what = time.name
+    )
+    internal.data[[internal.names[["start"]]]] <- rep(0, nrow(internal.data))
+    internal.data[[internal.names[["stop"]]]] <- time
+    internal.data[[internal.names[["event"]]]] <- internal.data[[event.name]]
+    attr(internal.data, "event.process") <- "terminal"
+  }
+  internal.data
+}
 ## converts a standard survival data set to counting process format
 ## scale is ignored but kept in place for legacy
 convert.counting <- function(f, dta, scale = FALSE) {

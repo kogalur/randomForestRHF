@@ -54,11 +54,14 @@ tune.iAUC.rhf(
 
 \arguments{
   
-  \item{formula}{Survival formula for \code{\link{rhf}}, typically
-    \code{Surv(id, start, stop, event) ~ .}.}
+  \item{formula}{Survival formula for \code{\link{rhf}}. The
+    response may be ordinary right-censored data,
+    \code{Surv(time, event)}, or counting-process data,
+    \code{Surv(id, start, stop, event)}.}
 
-  \item{data}{Counting-process data frame containing the variables in
-    \code{formula}.}
+  \item{data}{Data frame containing the variables in \code{formula}.
+    Ordinary right-censored input has one row per subject;
+    counting-process input may have multiple rows per subject.}
 
   \item{ntree}{Number of trees grown at each candidate \code{treesize}.}
 
@@ -139,11 +142,19 @@ The alias \code{tune.rhf} is provided for convenience.
   
 Repeatedly fits a hazard forest with different values of \code{treesize}
 and selects the value that optimizes the chosen criterion
-\code{perf}. When \code{perf = "risk"}, the criterion is the mean OOB
-risk. When \code{perf = "iAUC"}, \code{\link{auct.rhf}} is applied to
-each fit and the criterion is \code{1 - iAUC.uno}.  \code{tune.iAUC} is
-a wrapper around \code{tune.rhf} with \code{perf = "iAUC"}, using
-default \code{auct.rhf} settings when \code{auct.args = NULL}.
+\code{perf}. Ordinary \code{Surv(time, event)} input is converted
+internally to the same one-interval counting-process representation used
+by \code{\link{rhf}}. The tuning preflight, automatic upper bound, all
+candidate forests, and the final refit therefore use the same effective
+subjects and event information. The returned forest retains the original
+right-censored response names and can be used directly with ordinary
+survival test data through \code{predict.rhf()}.
+
+When \code{perf = "risk"}, the criterion is the mean OOB risk. When
+\code{perf = "iAUC"}, \code{\link{auct.rhf}} is applied to each fit and
+the criterion is \code{1 - iAUC.uno}.  \code{tune.iAUC} is a wrapper
+around \code{tune.rhf} with \code{perf = "iAUC"}, using default
+\code{auct.rhf} settings when \code{auct.args = NULL}.
 
 Because the default RHF fit adaptively selects the trimming fraction by
 OOB risk, tuning by OOB risk can otherwise combine the choice of
@@ -162,6 +173,8 @@ An object of class \code{"tune.treesize.rhf"} with components
   \item \code{path}: data frame with evaluated \code{treesize} values and
     corresponding criterion values (and an \code{iAUC} column when
     \code{perf = "iAUC"});
+  \item \code{n.subjects}: number of subjects remaining after RHF input
+    processing;
   \item \code{adaptive}: logical value indicating whether adaptive
     trimming was used during tuning;
   \item \code{forest}: RHF fit at \code{best.size} when
@@ -178,11 +191,20 @@ An object of class \code{"tune.treesize.rhf"} with components
 ## Example: tuning treesize by OOB empirical risk
 ## ------------------------------------------------------------
 
+data(pbc, package = "randomForestSRC")
+pbc.raw <- na.omit(pbc)
 set.seed(7)
-d <- hazard.simulation(1)$dta
-f <- "Surv(id, start, stop, event) ~ ."
+trn <- sample(
+  seq_len(nrow(pbc.raw)),
+  size = floor(0.75 * nrow(pbc.raw)),
+  replace = FALSE
+)
 
-## tune.rhf is an alias for tune.treesize.rhf
+d <- pbc.raw[trn, , drop = FALSE]
+tst <- pbc.raw[-trn, , drop = FALSE]
+f <- Surv(days, status) ~ .
+
+## tune.rhf is an alias for tune.treesize.rhf; no manual conversion is needed
 tuneRisk <- tune.rhf(f, d)  ## same as tune.treesize.rhf(f, d)
 
 ## For a controlled tree-size search, keep the trimming fraction fixed.
@@ -200,12 +222,17 @@ best.forest <- tuneRisk$forest
 a.risk <- auct.rhf(best.forest)
 print(a.risk$iAUC.uno)
 
+## the tuned forest accepts the ordinary PBC test data directly
+print(predict(best.forest, tst))
+
 
 ## ------------------------------------------------------------
 ## Example: tuning treesize by iAUC
 ## ------------------------------------------------------------
 
 set.seed(7)
+f <- "Surv(id, start, stop, event) ~ ."
+d <- hazard.simulation(1, n=100)$dta
 tuneiAUC <- tune.iAUC(f, d)
 
 oldpar <- par(mfrow = c(1, 1))
@@ -225,6 +252,8 @@ print(1 - a.iauc$iAUC.uno)
 ## ------------------------------------------------------------
 
 set.seed(7)
+f <- "Surv(id, start, stop, event) ~ ."
+d <- hazard.simulation(1, n=100)$dta
 tuneiAUC.boot <- tune.iAUC(f, d, auct.args=list(bootstrap.rep=25))
 oldpar <- par(mfrow = c(1, 1))
 plot(tuneiAUC.boot)        
@@ -236,10 +265,12 @@ par(oldpar)
 ## ------------------------------------------------------------
 
 set.seed(7)
+f <- "Surv(id, start, stop, event) ~ ."
+d <- hazard.simulation(1, n=100)$dta
 tuneHazInc <- tune.iAUC(
   f, d,
   auct.args = list(
-    min.cases    = 100,
+    min.cases    = 5,
     marker       = "hazard",
     method       = "incident"
   )
@@ -256,7 +287,7 @@ print(tuneHazInc$best.err)
 best.forest.haz <- tuneHazInc$forest
 aHazInc <- auct.rhf(
   best.forest.haz,
-  min.cases = 100,
+  min.cases = 5,
   marker  = "hazard",
   method  = "incident"
 )

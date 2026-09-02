@@ -20,15 +20,37 @@ rhf <- function(formula,
                 ...
                 )
 {
+  user.call <- match.call()
+  user.call$formula <- formula
   bootstrap <- match.arg(bootstrap, c("by.root", "none", "by.user"))
   samptype <- match.arg(samptype, c("swor", "swr"))
   adaptive <- get.adaptive(adaptive)
   dots <- list(...)
   hazard.options <- get.hazard.options(dots, adaptive = adaptive)
   dots[names(hazard.options)] <- hazard.options
-  do.call("rhf.workhorse", c(list(
-                             formula = formula,
-                             data = data,
+  ## Normalize the public formula/data interface before entering the canonical
+  ## counting-process workhorse.  Ordinary Surv(time, event) input is converted
+  ## to one interval per subject; existing Surv(id, start, stop, event) input is
+  ## returned unchanged.
+  input <- .rhf.prepare.input(formula, data)
+  declared.event.process <- dots$event.process
+  if (is.null(declared.event.process)) {
+    declared.event.process <- attr(input$data, "event.process", exact = TRUE)
+  }
+  declared.event.process <- .rhf.match.event.process(declared.event.process)
+  if (identical(input$info$format, "right-censored") &&
+      identical(declared.event.process, "recurrent")) {
+    stop(
+      "Surv(time, event) is a terminal right-censored response and cannot be ",
+      "used with event.process = 'recurrent'.",
+      call. = FALSE
+    )
+  }
+  right.censored <- identical(input$info$format, "right-censored")    
+  dots$right.censored <- right.censored
+  fit <- do.call("rhf.workhorse", c(list(
+                             formula = input$formula,
+                             data = input$data,
                              ntree = ntree,
                              nsplit = nsplit,
                              treesize = treesize,
@@ -47,4 +69,12 @@ rhf <- function(formula,
                              seed = seed,
                              do.trace = do.trace),
                              dots))
+  ## Retain the user-facing input contract for prediction and printing.  The
+  ## forest copy allows this metadata to survive reduced or reconstructed RHF
+  ## objects that retain the fitted forest but not every top-level component.
+  fit$input.info <- input$info
+  fit$forest$input.info <- input$info
+  fit$forest$parms$input.info <- input$info
+  fit$call <- user.call
+  fit
 }

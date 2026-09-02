@@ -5,8 +5,9 @@
 
   Random Hazard Forest (RHF) is a tree-ensemble survival method that
   estimates case-specific hazards and cumulative hazard functions on a
-  working time grid and supports time-dependent covariates using
-  counting-process (start/stop) format.
+  working time grid. It accepts ordinary right-censored data through
+  \code{Surv(time, event)} and time-dependent covariates through
+  counting-process \code{Surv(id, start, stop, event)} input.
 
 }
 
@@ -35,9 +36,14 @@ rhf(formula,
 
 \arguments{
 
-  \item{formula}{Model formula specifying the response and predictors.}
+  \item{formula}{Model formula specifying the response and predictors.
+  The response may be ordinary right-censored survival data,
+  \code{Surv(time, event)}, or RHF counting-process data,
+  \code{Surv(id, start, stop, event)}.}
 
-  \item{data}{Data frame containing the variables referenced in \code{formula}.}
+  \item{data}{Data frame containing the variables referenced in
+  \code{formula}. Ordinary right-censored input has one row per subject;
+  counting-process input may have multiple rows per subject.}
 
   \item{ntree}{Number of trees to grow in the ensemble.}
 
@@ -130,7 +136,7 @@ rhf(formula,
 
   \item{do.trace}{Time in seconds between progress updates printed to the console.}
 
-  \item{...}{Additional arguments (currently unused).}
+  \item{...}{Additional expert-level controls passed to internal RHF methods.}
 
 }
 
@@ -139,11 +145,14 @@ rhf(formula,
 \strong{Overview}
 
 \code{rhf()} is the main fitting function for Random Hazard Forests
-(RHF). It grows an ensemble of hazard trees from survival data
-represented in counting-process, start--stop form,
+(RHF). Ordinary right-censored data can be supplied directly as
+\code{Surv(time, event)} with one row per subject. RHF converts this
+internally to a one-interval predictable process with \code{start = 0},
+\code{stop = time}, and time-static predictors. Time-dependent data are
+supplied explicitly in counting-process form as
 \code{Surv(id, start, stop, event)}. Multiple rows for the same
-\code{id} describe an evolving covariate path. Predictors may include
-time-static variables, repeated across rows, and time-dependent
+\code{id} then describe an evolving covariate path. Predictors may
+include time-static variables, repeated across rows, and time-dependent
 covariates that change from row to row.
 
 RHF estimates hazards pathwise on the time grid
@@ -166,46 +175,47 @@ good peformance in all settings.
 
 \strong{Predictable covariate paths}
 
-The start--stop rows must represent a predictable covariate process.
-That is, the covariate values used to evaluate the hazard at a given
-time must be determined by information available before that time.
-Measurements or treatments recorded later must not be used to
-construct covariates for an earlier prediction time. \code{rhf()}
-assumes that this no-lookahead convention has already been encoded in
-the input data.
+For counting-process input, the start--stop rows must represent a
+predictable covariate process. That is, the covariate values used to
+evaluate the hazard at a given time must be determined by information
+available before that time. Measurements or treatments recorded later
+must not be used to construct covariates for an earlier prediction
+time. \code{rhf()} assumes that this no-lookahead convention has already
+been encoded in the input data. For ordinary \code{Surv(time, event)}
+input, each subject's supplied predictors are treated as time-static
+over the interval from zero to the observed time.
 
 
-\strong{Required data format}
+\strong{Supported response formats}
 
-The input data must contain the following four columns. Column names
-must agree with those specified in the formula; see the examples.
+RHF accepts either of the following response forms.
 
 \describe{
 
-  \item{\code{id}}{
-  A unique integer identifier for each individual. The identifier is
-  repeated across all rows belonging to that individual.
+  \item{\code{Surv(time, event)}}{
+  Ordinary terminal right-censored data with one row per subject. The
+  \code{time} and \code{event} arguments must each be column names in
+  \code{data}. Times must be non-negative, and \code{event} must be
+  coded \code{0} for censoring and \code{1} for an event. RHF creates
+  a private subject identifier and internally represents each row as
+  one counting-process interval \code{(0, time]}.
   }
 
-  \item{\code{start}}{
-  The start time of the row. All times must be scaled to
-  \code{[0, 1]} and must use the same scale as
-  \code{time.interest}.
-  }
-
-  \item{\code{stop}}{
-  The stop time of the row. Each row must satisfy
-  \code{stop > start}.
-  }
-
-  \item{\code{event}}{
-  A binary event indicator for the row
-  (\code{0} = no event, \code{1} = event). The current implementation
-  supports single-event survival data, so at most one event may be
-  recorded for each individual.
+  \item{\code{Surv(id, start, stop, event)}}{
+  Counting-process data for time-dependent covariates. The subject
+  identifier \code{id} is repeated across all rows for that subject.
+  Each row must satisfy \code{stop > start}. Intervals may be
+  contiguous or separated by gaps, but they may not overlap within a
+  subject. The row-level \code{event} increment must be coded
+  \code{0/1}; terminal-event data may contain at most one event per
+  subject, on that subject's final row.
   }
 
 }
+
+Times are supplied in their original non-negative units. RHF maps them
+to its internal working scale during data processing and returns
+\code{time.interest} and time-based predictions in the original units.
 
 
 \strong{Tree construction}
@@ -252,9 +262,10 @@ training data.
 
 \strong{Data conversion}
 
-The helper function \code{convert.counting()} converts conventional
-survival data to counting-process form. See the examples for additional
-guidance on data preparation.
+Manual conversion is not required for ordinary right-censored data:
+\code{rhf(Surv(time, event) ~ ., data)} performs the one-interval
+conversion internally. The helper \code{convert.counting()} remains
+available when an explicit counting-process data frame is desired.
 
 }
 
@@ -266,8 +277,11 @@ guidance on data preparation.
   \code{time.interest} and case-specific ensemble estimates of the hazard
   and cumulative hazard. When bootstrapping is used, these are typically
   returned as \code{hazard.oob}/\code{chf.oob} (out-of-bag) and
-  \code{hazard.inbag}/\code{chf.inbag} (in-bag). Use \code{\link{predict.rhf}}
-  to obtain estimates for new data.
+  \code{hazard.inbag}/\code{chf.inbag} (in-bag). The component
+  \code{input.info} records whether the forest was grown from ordinary
+  right-censored or counting-process input and retains the response names
+  needed for prediction. Use \code{\link{predict.rhf}} to obtain estimates
+  for new data.
 
 }
 
@@ -317,13 +331,11 @@ guidance on data preparation.
 
 ## load the data
 data(pbc, package = "randomForestSRC")
-## convert the data to counting process
-d <- convert.counting(Surv(days, status) ~ ., na.omit(pbc))
-## set the formula
-f <- "Surv(id, start, stop, event) ~ ."
+pbc.raw <- na.omit(pbc)
 
-## rhf call
-print((o <- rhf(f, d, ntree = 3)))
+## ordinary right-censored data can be supplied directly
+f <- Surv(days, status) ~ .
+print((o <- rhf(f, pbc.raw, ntree = 3)))
 
 ## smooth hazard estimator for specific cases
 plot(o, idx=c(1,5,10))
@@ -338,39 +350,53 @@ plot(o, idx=1:10, lwd=0, hazard.only=TRUE, legend.show=FALSE)
 ## ------------------------------------------------------------
 
 data(pbc, package = "randomForestSRC")
-d <- convert.counting(Surv(days, status) ~ ., na.omit(pbc))
+pbc.raw <- na.omit(pbc)
 
-## first we run rhf
-o.rhf <- rhf("Surv(id, start, stop, event) ~ .", d)
-h <- o.rhf$hazard.oob
+## first we run rhf directly on the ordinary survival data
+o.rhf <- rhf(Surv(days, status) ~ ., pbc.raw)
+h.rhf <- o.rhf$hazard.oob
 time <- o.rhf$time.interest
-H <- t(o.rhf$chf.oob)
-S.rhf <- exp(-H)
+H.rhf <- o.rhf$chf.oob
+S.rhf <- exp(-H.rhf)
 
-## next we run rsf, using the same time.interest grid
-o.rsf <- randomForestSRC::rfsrc(Surv(days, status) ~ ., pbc, ntime = time)
-S.rsf <- t(o.rsf$survival.oob)
+## next we run rsf, using the same cases and time.interest grid
+o.rsf <- randomForestSRC::rfsrc(
+  Surv(days, status) ~ ., pbc.raw, ntime = time, use.uno = FALSE
+)
+H.rsf <- o.rsf$chf.oob
+S.rsf <- o.rsf$survival.oob
+
+## compare C-stat of RHF to RSF
+cat("RHF C-index:",
+  randomForestSRC::get.cindex(o.rhf$yvar[,2],o.rhf$yvar[,3],rowSums(H.rhf, na.rm = TRUE)),"\n")
+cat("RSF C-index:",
+  randomForestSRC::get.cindex(o.rsf$yvar[,1],o.rsf$yvar[,2],rowSums(H.rsf, na.rm = TRUE)),"\n")
+cat("RSF C-index (from rsf object):",tail(o.rsf$err.rate, 1),"\n")
+
 
 ## graphical parameters
-bass <- 1
 oldpar <- par(mfrow=c(2,2))
 
 ## plot survival results 
-matplot(time,S.rhf,type="l",col=gray(.6))
-matplot(time,S.rsf,type="l",col=gray(.6))
-boxplot(S.rhf-S.rsf,ylab="S.rhf-S.rsf",xaxt="n",outline=FALSE,range=1e-10)
+matplot(time,t(S.rhf),type="l",col=gray(.6),ylab="RHF survival")
+matplot(time,t(S.rsf),type="l",col=gray(.6),ylab="RSF survival")
+boxplot(t(S.rhf-S.rsf),ylab="survival diff.",xlab="cases",xaxt="n",outline=FALSE,range=1e-10)
 abline(h=0,lwd=3,col=2)
 
-## plot chf and hazard results
-finite <- is.finite(h)
-matplot(time,t(h),ylab="hazard",pch=16,type="n",
-        ylim=c(0,quantile(h[finite],.99)))
+## plot hazard direct approach - see plot.rhf() for user friendly function
+finite <- is.finite(h.rhf)
+matplot(time,t(h.rhf),ylab="RHF hazard",
+        pch=16,type="n",
+        ylim=c(0,quantile(h.rhf[finite],.99)))
 nO <- lapply(which(rowSums(finite) >= 2L), function(i) {
-  lines(supsmu(time[finite[i,]],h[i,finite[i,]],bass=bass),
+  lines(supsmu(time[finite[i,]],h.rhf[i,finite[i,]],bass=1),
         type="b",pch=16,col=gray(.6),cex=.5)
 })
 
+
+
 par(oldpar)
+
 
 ## ------------------------------------------------------------
 ##  TDC illustration (using built in hazard simulation function)
@@ -395,12 +421,17 @@ plot(o3,idx=2)
 ## ------------------------------------------------------------
 
 data(peakVO2, package = "randomForestSRC")
-d <- convert.counting(Surv(ttodead, died)~., peakVO2)
-f <- "Surv(id, start, stop, event) ~ ."
+f <- Surv(ttodead, died) ~ .
 
-## build the forest
-o1 <- rhf(f, d, treesize=10)
-o2 <- rhf(f, d, treesize=30)
+## build the forest directly from ordinary right-censored data
+o1 <- rhf(f, peakVO2, treesize=10)
+o2 <- rhf(f, peakVO2, treesize=30)
+
+## old-school C-stat
+cstat.f <- function(o) {randomForestSRC::get.cindex(o$yvar[, 2],
+  o$yvar[, 3],rowSums(o$chf.oob, na.rm =TRUE))}
+cat("C-stat treesize 10:", cstat.f(o1), "\n")
+cat("C-stat treesize 30:", cstat.f(o2), "\n") 
 
 ## acquire auc-t
 a1.chf <- auct.rhf(o1) ## same as auct.rhf(o1, marker = "chf")

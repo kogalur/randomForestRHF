@@ -1,5 +1,6 @@
 ## tune.treesize: choose treesize to optimize either OOB risk or OOB iAUC.uno
 ## Incident-AUC diagnostic revision: 2026-08-25.2
+## Direct right-censored formula/data interface: 2026-08-28
 tune.treesize.rhf <- function(formula, data,
                               ntree = 500,
                               nsplit = 10,
@@ -30,88 +31,87 @@ tune.treesize.rhf <- function(formula, data,
   perf   <- match.arg(perf)
   adaptive <- get.adaptive(adaptive)
   tune.dots <- list(...)
+  ## Normalize the public formula/data interface for the tuning preflight.
+  ## Candidate forests and the final refit continue to call the public rhf()
+  ## interface with the original formula and data so the returned forest keeps
+  ## the original right-censored response map for prediction.
+  input <- .rhf.prepare.input(formula, data)
+  tune.formula <- input$formula
+  tune.data <- input$data
   declared.event.process <- tune.dots$event.process
   if (is.null(declared.event.process)) {
-    declared.event.process <- attr(data, "event.process", exact = TRUE)
+    declared.event.process <- attr(tune.data, "event.process", exact = TRUE)
   }
   if (is.null(declared.event.process)) {
     declared.event.process <- "auto"
   }
   declared.event.process <- .rhf.match.event.process(declared.event.process)
-  ## This tuning wrapper currently assumes one terminal event per subject.
-  ## Detect recurrent input before the first candidate forest is grown.
-  get_counting_names_from_formula <- function(formula, data) {
-    f <- as.formula(formula)
-    lhs <- f[[2]]
-    if (!is.call(lhs) || !identical(as.character(lhs[[1]]), "Surv")) {
-      return(NULL)
-    }
-    L <- as.list(lhs)[-1]
-    if (length(L) != 4L) {
-      return(NULL)
-    }
-    getnm <- function(z) paste(deparse(z), collapse = "")
-    nm <- vapply(L, getnm, character(1L))
-    names(nm) <- c("id", "start", "stop", "event")
-    if (!all(nm %in% names(data))) {
-      return(NULL)
-    }
-    nm
+  if (identical(input$info$format, "right-censored") &&
+      identical(declared.event.process, "recurrent")) {
+    stop(
+      "Surv(time, event) is a terminal right-censored response and cannot be ",
+      "used with event.process = 'recurrent'.",
+      call. = FALSE
+    )
   }
-  counting.names <- get_counting_names_from_formula(formula, data)
-  if (!is.null(counting.names)) {
-    outcome.data <- data[, unname(counting.names), drop = FALSE]
-    keep.outcome <- complete.cases(outcome.data)
-    outcome.data <- outcome.data[keep.outcome, , drop = FALSE]
-    if (nrow(outcome.data) > 0L) {
-      coerce.time <- function(x) {
-        if (is.factor(x)) as.numeric(as.character(x)) else as.numeric(x)
-      }
-      process.info <- tryCatch(
-        .rhf.event.process.info(
-          id = outcome.data[[counting.names[["id"]]]],
-          event = outcome.data[[counting.names[["event"]]]],
-          start = coerce.time(outcome.data[[counting.names[["start"]]]]),
-          stop = coerce.time(outcome.data[[counting.names[["stop"]]]]),
-          event.process = "auto",
-          binary = TRUE,
-          what = counting.names[["event"]]
-        ),
-        error = function(e) {
-          stop("tune.treesize.rhf() requires a complete 0/1 terminal-event outcome: ",
-               conditionMessage(e), call. = FALSE)
-        }
-      )
-      recurrent.data <- identical(declared.event.process, "recurrent") ||
-                        identical(process.info$inferred, "recurrent") ||
-                        !isTRUE(process.info$terminal.valid)
-      if (recurrent.data) {
-        stop(
-          "tune.treesize.rhf() is currently available only for terminal ",
-          "single-event RHF data. Recurrent-event data were detected. ",
-          "Specify treesize directly in rhf(); recurrent-event tree-size ",
-          "tuning is not currently implemented.",
-          call. = FALSE
-        )
-      }
-    }
+  if (!is.numeric(min.events.per.gap) ||
+      length(min.events.per.gap) != 1L ||
+      is.na(min.events.per.gap) ||
+      !is.finite(min.events.per.gap) ||
+      min.events.per.gap < 1) {
+    stop("min.events.per.gap must be a positive finite scalar.",
+         call. = FALSE)
   }
-  ## ---- robust subject count (prefer explicit id, else 'id' column, else rows)
-  get_id_from_formula <- function(formula, data) {
-    f   <- as.formula(formula)
-    lhs <- f[[2]]
-    if (is.call(lhs) && identical(as.character(lhs[[1]]), "Surv")) {
-      L <- as.list(lhs)[-1]
-      if (length(L) == 4L) {                # Surv(id, start, stop, event)
-        nm <- paste(deparse(L[[1]]), collapse = "")
-        if (nm %in% names(data)) return(nm)
-      }
-    }
-    if ("id" %in% names(data)) return("id")
-    NULL
+  ## Parse and clean the canonical input once.  This gives the tuner the same
+  ## effective subject set, event-process classification, and event count used
+  ## by rhf.workhorse(), including when an explicit upper bound is supplied.
+  formula.prelim <- parse.formula(as.formula(tune.formula), tune.data, NULL)
+  formula.detail <- finalize.formula(formula.prelim, tune.data)
+  family <- formula.detail$family
+  xvar.names <- formula.detail$xvar.names
+  yvar.names <- formula.detail$yvar.names
+  subj.names <- formula.detail$subj.names
+  if (family != "surv-tdc") {
+    stop(
+      "tune.treesize.rhf() requires Surv(time, event) right-censored data ",
+      "or Surv(id, start, stop, event) counting-process data.",
+      call. = FALSE
+    )
   }
-  id.var <- get_id_from_formula(formula, data)
-  n.subj <- if (!is.null(id.var)) length(unique(data[[id.var]])) else nrow(data)
+  if (length(xvar.names) == 0L) {
+    stop("The formula did not define any x variables.", call. = FALSE)
+  }
+  if (length(yvar.names) == 0L) {
+    stop("The formula did not define any y variables.", call. = FALSE)
+  }
+  if (length(subj.names) != 1L) {
+    stop("The formula did not identify exactly one subject variable.",
+         call. = FALSE)
+  }
+  bound.data <- cleanup.counting(
+    tune.data,
+    xvar.names,
+    yvar.names,
+    subj.names,
+    event.process = declared.event.process
+  )
+  time.map <- attr(bound.data, "time.map")
+  event.process <- attr(bound.data, "event.process")
+  event.process.info <- attr(bound.data, "event.process.info")
+  subj.bound <- bound.data[, subj.names]
+  yvar.bound <- bound.data[, yvar.names]
+  n.subj <- length(unique(subj.bound))
+  recurrent.data <- identical(event.process, "recurrent") ||
+                    !isTRUE(event.process.info$terminal.valid)
+  if (recurrent.data) {
+    stop(
+      "tune.treesize.rhf() is currently available only for terminal ",
+      "single-event RHF data. Recurrent-event data were detected. ",
+      "Specify treesize directly in rhf(); recurrent-event tree-size ",
+      "tuning is not currently implemented.",
+      call. = FALSE
+    )
+  }
   ## ---- bounds
   lower <- as.integer(max(2L, lower))
   if (is.null(upper)) {
@@ -120,47 +120,7 @@ tune.treesize.rhf <- function(formula, data,
     ## cleaning and event-process validation.  The explicit ntime and
     ## min.events.per.gap controls are also passed unchanged to every candidate
     ## forest and to the final refit.
-    if (!is.numeric(min.events.per.gap) ||
-        length(min.events.per.gap) != 1L ||
-        is.na(min.events.per.gap) ||
-        !is.finite(min.events.per.gap) ||
-        min.events.per.gap < 1) {
-      stop("min.events.per.gap must be a positive finite scalar.",
-           call. = FALSE)
-    }
     ntime.bound <- ntime
-    formula.prelim <- parse.formula(as.formula(formula), data, NULL)
-    formula.detail <- finalize.formula(formula.prelim, data)
-    family <- formula.detail$family
-    xvar.names <- formula.detail$xvar.names
-    yvar.names <- formula.detail$yvar.names
-    subj.names <- formula.detail$subj.names
-    if (family != "surv-tdc") {
-      stop("tune.treesize.rhf() currently works only for TDC survival.",
-           call. = FALSE)
-    }
-    if (length(xvar.names) == 0L) {
-      stop("The formula did not define any x variables.", call. = FALSE)
-    }
-    if (length(yvar.names) == 0L) {
-      stop("The formula did not define any y variables.", call. = FALSE)
-    }
-    if (length(subj.names) == 0L) {
-      stop("The formula did not identify a subject variable.", call. = FALSE)
-    }
-    bound.data <- cleanup.counting(
-      data,
-      xvar.names,
-      yvar.names,
-      subj.names,
-      event.process = declared.event.process
-    )
-    time.map <- attr(bound.data, "time.map")
-    event.process <- attr(bound.data, "event.process")
-    event.process.info <- attr(bound.data, "event.process.info")
-    subj.bound <- bound.data[, subj.names]
-    yvar.bound <- bound.data[, yvar.names]
-    n.subj <- length(unique(subj.bound))
     if (length(ntime.bound) > 1L) {
       ntime.bound <- .forward.time(ntime.bound, time.map)
     }
@@ -185,7 +145,6 @@ tune.treesize.rhf <- function(formula, data,
       ceiling(C * default.size),
       support.limit
     )
-    rm(bound.data)
     if (!is.finite(upper) || upper <= lower) {
       stop(
         paste0(
@@ -197,6 +156,10 @@ tune.treesize.rhf <- function(formula, data,
       )
     }
   }
+  ## The tuning fits below use the original public formula and data.  Release
+  ## the canonical preflight copy before growing the candidate forests.
+  rm(bound.data, tune.data, input, subj.bound, yvar.bound,
+     formula.prelim, formula.detail)
   upper <- as.integer(max(lower + 1L, upper))
   if (!is.null(seed)) set.seed(seed)
   ## ---- caches (keyed by treesize)

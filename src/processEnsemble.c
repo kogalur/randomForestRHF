@@ -724,6 +724,26 @@ static double getCaseRiskExactOverlap(double **ensembleKHZptr,
   }
   return result;
 }
+static void finalizeFullHorizonTarget(uint     subjIndex,
+                                      double  *ensembleDen,
+                                      double **ensembleKHZptr,
+                                      double **ensembleCHFptr) {
+  double cumulative;
+  uint k;
+  cumulative = 0.0;
+  if (ensembleDen[subjIndex] > 0) {
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      cumulative +=
+        ensembleKHZptr[k][subjIndex] * SG_timeInterestDelta[k];
+      ensembleCHFptr[k][subjIndex] = cumulative;
+    }
+  }
+  else {
+    for (k = 1; k <= RF_sortedTimeInterestSize; k++) {
+      ensembleCHFptr[k][subjIndex] = RF_nativeNaN;
+    }
+  }
+}
 static void finalizePathDomainTarget(uint     subjIndex,
                                      char    *pathDomain,
                                      double  *pathOverlap,
@@ -775,6 +795,7 @@ void finalizePathDomainOutputs(char mode) {
   uint pointEnd;
   uint subjCount;
   uint *subjSlotCount;
+  uint *subjTailCaseMap;
   uint **subjList;
   fullFlag = FALSE;
   oobFlag = FALSE;
@@ -787,6 +808,7 @@ void finalizePathDomainOutputs(char mode) {
     responseIn = RF_fresponseIn;
     subjCount = SG_fsubjCount;
     subjSlotCount = SG_fsubjSlotCount;
+    subjTailCaseMap = SG_fsubjTailCaseMap;
     subjList = SG_fsubjList;
     break;
   case RF_GROW:
@@ -796,12 +818,30 @@ void finalizePathDomainOutputs(char mode) {
     responseIn = RF_responseIn;
     subjCount = RF_subjCount;
     subjSlotCount = RF_subjSlotCount;
+    subjTailCaseMap = SG_subjTailCaseMap;
     subjList = RF_subjList;
     break;
   default:
     return;
   }
   if ((fullFlag == FALSE) && (oobFlag == FALSE)) {
+    return;
+  }
+  if (SG_optLocal & SG_OPT_RIGHT_CENS) {
+    for (i = 1; i <= subjCount; i++) {
+      if (fullFlag == TRUE) {
+        finalizeFullHorizonTarget(i,
+                                  RF_fullEnsembleDen,
+                                  SG_fullEnsembleKHZptr,
+                                  SG_fullEnsembleCHFptr);
+      }
+      if (oobFlag == TRUE) {
+        finalizeFullHorizonTarget(i,
+                                  RF_oobEnsembleDen,
+                                  SG_oobEnsembleKHZptr,
+                                  SG_oobEnsembleCHFptr);
+      }
+    }
     return;
   }
   pathDomain = cvector(1, RF_sortedTimeInterestSize);
@@ -872,6 +912,16 @@ void finalizePathDomainOutputs(char mode) {
                                RF_oobEnsembleDen,
                                SG_oobEnsembleKHZptr,
                                SG_oobEnsembleCHFptr);
+    }
+    pointEnd = firstTimeInterestGreater(
+      responseIn[RF_timeIndex][subjTailCaseMap[i]]);
+    for (k = pointEnd; k <= RF_sortedTimeInterestSize; k++) {
+      if (fullFlag == TRUE) {
+        SG_fullEnsembleCHFptr[k][i] = RF_nativeNaN;
+      }
+      if (oobFlag == TRUE) {
+        SG_oobEnsembleCHFptr[k][i] = RF_nativeNaN;
+      }
     }
   }
   free_cvector(pathDomain, 1, RF_sortedTimeInterestSize);

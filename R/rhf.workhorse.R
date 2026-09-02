@@ -254,6 +254,10 @@ rhf.workhorse <- function(formula,
   wmode <- is.hidden.wmode(dots)    
   ## values of wmode in [1, 2, 3] are converted to local bits.
   wmode.bits <- get.wmode.bits(wmode)
+  ## right censored flag will typically always exist and be true or
+  ## false, not hidden, but we allow some flexibility
+  right.censored <- is.hidden.rc(dots)
+  right.censored.bits <- get.rc.bits(right.censored)
   ## Set the user defined trace.
   do.trace <- get.trace(do.trace)
   ## Start the C external timer.
@@ -270,7 +274,9 @@ rhf.workhorse <- function(formula,
                                   as.integer(membership.bits +    ## high option word
                                              2^16 + 2^18 +        ## MEMB_OUTG and TERM_OUTG
                                              samptype.bits),
-                                  as.integer(experimental.bits + wmode.bits),  ## rhf (local experimental) option word
+                                  as.integer(experimental.bits +
+                                             wmode.bits +
+                                             right.censored.bits),  ## rhf (local experimental) option word
                                   as.integer(ntree),
                                   as.integer(n),
                                   list(as.integer(subj.unique.count),
@@ -436,7 +442,7 @@ rhf.workhorse <- function(formula,
                       terminal.quants = TRUE,
                       ## add x,y values here as needed
                       xvar.time = xvar.time,
-                      version = "2.0.0")
+                      version = "2.0.3")
   empr.risk <- NULL
   oob.empr.risk <- NULL
   nodeStat <- NULL
