@@ -97,7 +97,8 @@ get.ensemble.bits <- function (ensemble) {
 }
 get.experimental.bits  <- function(experimental.bits, trace,
                                     hazard.estimator = c("NA", "COE"),
-                                    coe.aggregate = c("trimmed.mean", "median", "mean")) {
+                                    coe.aggregate = c("max.robust", "trimmed.mean",
+                                                      "median", "mean")) {
   ## New protocol is to use the uniform hazard estimator. This is
   ## UBK's version of the hazard. It avoids the issue of having OOB
   ## unscaled risk inf values, that we experienced due to log(0) where
@@ -130,13 +131,14 @@ get.experimental.bits  <- function(experimental.bits, trace,
     ## Default is UBK's rule when null.
     experimental.bits <- 2^1
   }
-  ## Bits 4, 5, and 6 belong to the hidden COE aggregation controls.  Clear
+  ## Bits 4 through 7 belong to the hidden COE aggregation controls.  Clear
   ## any manual settings and then set exactly one aggregation bit when COE is
   ## requested.
-  experimental.bits <- bitwAnd(as.integer(experimental.bits), 255L - (2^4 + 2^5 + 2^6))
+  experimental.bits <- bitwAnd(as.integer(experimental.bits), 255L - (2^4 + 2^5 + 2^6 + 2^7))
   coe.bits <- 0L
   if (hazard.estimator == "COE") {
     coe.bits <- switch(coe.aggregate,                       
+                       max.robust = 2^7,
                        median = 2^4,                       
                        trimmed.mean = 2^5,
                        mean = 2^6)
@@ -154,6 +156,7 @@ get.experimental.bits  <- function(experimental.bits, trace,
       )
       message(
           paste(
+              paste0("COE Max-Robust Aggregate:  ", is.bit(experimental.bits, 7)),
               paste0("COE Median Aggregate:  ", is.bit(experimental.bits, 4)),
               paste0("COE Winsor Aggregate:  ", is.bit(experimental.bits, 5)),
               paste0("COE Mean Aggregate:    ", is.bit(experimental.bits, 6)),
@@ -186,10 +189,12 @@ get.forest.bits <- function (forest) {
     stop("hazard.config must be a list.", call. = FALSE)
   }
   trim <- get.coe.trim(hazard.config$coe.trim)
-  ## coe.trim has no effect for median or arithmetic-mean aggregation.  Keep a
-  ## deterministic first-candidate marker and do not retain an OOB search curve.
+  ## Max-robust and winsorized aggregation both use coe.trim and native OOB
+  ## selection.  Median and arithmetic-mean aggregation keep a deterministic
+  ## first-candidate marker and do not retain an OOB search curve.
   if (!identical(hazard.config$hazard.estimator, "COE") ||
-      !identical(hazard.config$coe.aggregate, "trimmed.mean")) {
+      !(hazard.config$coe.aggregate %in%
+        c("max.robust", "trimmed.mean"))) {
     hazard.config$coe.trim.index <- 1L
     hazard.config$coe.trim.selected <- trim[[1L]]
     hazard.config$coe.aggregate.selected <- hazard.config$coe.aggregate
@@ -255,7 +260,7 @@ get.hazard.options <- function(dots, hazard.config = NULL, adaptive = TRUE) {
   )
   inherited.config <- hazard.config
   hazard.estimator.choices <- c("COE", "NA")
-  coe.aggregate.choices <- c("trimmed.mean", "median", "mean")
+  coe.aggregate.choices <- c("max.robust", "trimmed.mean", "median", "mean")
   ## Duplicate hidden options are ambiguous and would otherwise be forwarded
   ## more than once to the workhorse function.
   dot.names <- names(dots)
@@ -321,13 +326,15 @@ get.hazard.options <- function(dots, hazard.config = NULL, adaptive = TRUE) {
   )
   hazard.options$coe.trim <- get.coe.trim(hazard.options$coe.trim)
   ## Preserve a grow-time selected index only when the candidate vector is
-  ## unchanged and winsorized aggregation remains active.  Index zero denotes
-  ## the native median fallback.  Restore mode will recompute the selection;
-  ## true prediction reuses the fitted index, including that fallback sentinel.
+  ## unchanged and a trim-selected aggregation remains active.  Index zero
+  ## denotes the native median fallback.  Restore mode will recompute the
+  ## selection; true prediction reuses the fitted index, including that
+  ## fallback sentinel.
   selected.index <- 1L
   selected.risk <- NULL
   if (identical(hazard.options$hazard.estimator, "COE") &&
-      identical(hazard.options$coe.aggregate, "trimmed.mean") &&
+      hazard.options$coe.aggregate %in%
+        c("max.robust", "trimmed.mean") &&
       is.list(inherited.config) &&
       !is.null(inherited.config$coe.trim)) {
     inherited.trim <- tryCatch(

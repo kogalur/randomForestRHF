@@ -64,7 +64,7 @@ void processEnsembleInSitu(char mode, uint treeID) {
         omp_unset_lock(&RF_lockEnsbUpdtCount);
 #endif
       }
-    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+    if ( (SG_optLocal & SG_OPT_COE_AGG) == 0) {
       normalizeEnsembleEstimates(mode);
     }
 #ifdef _OPENMP
@@ -75,7 +75,7 @@ void processEnsembleInSitu(char mode, uint treeID) {
 }
 void updateEnsemble (char mode, uint treeID) {
   if ((mode == RF_GROW) || (mode == RF_REST)) {
-    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+    if ( (SG_optLocal & SG_OPT_COE_AGG) == 0) {
       updateEnsembleGrow(mode, treeID);
     }
     else {
@@ -83,7 +83,7 @@ void updateEnsemble (char mode, uint treeID) {
     }
   }
   else {
-    if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+    if ( (SG_optLocal & SG_OPT_COE_AGG) == 0) {
       updateEnsemblePred(mode, treeID);
     }
     else {
@@ -949,9 +949,7 @@ void calculateRiskCore(char mode, char wMode, uint trimIndex, char coeOOBRiskPre
   uint   **subjList;
   oobFlag = fullFlag = FALSE;
   coeFlag = ((SG_optLocal &
-              (SG_OPT_SWTCH_FOUR |
-               SG_OPT_SWTCH_FIVE |
-               SG_OPT_SWTCH_SIX)) != 0);
+              SG_OPT_COE_AGG) != 0);
   coeTreeValue = NULL;
   coeOOBTreeIndex = NULL;
   if ((coeFlag == TRUE) &&

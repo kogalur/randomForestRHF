@@ -459,7 +459,7 @@ SEXP entryPred(SEXP traceFlag,
   SG_coeTrim              = REAL(coeTrim);  SG_coeTrim --;
   SG_coeTrimIndex         = (uint) INTEGER(coeTrimIndex)[0];
   if ( (SG_coeTrimIndex > SG_coeTrimSize) ||
-       ((SG_coeTrimIndex == 0) && ((SG_optLocal & SG_OPT_SWTCH_FIVE) == 0)) ) {
+       ((SG_coeTrimIndex == 0) && ((SG_optLocal & SG_OPT_COE_TRIM) == 0)) ) {
     RF_nativeError("\nRF-SRC:  *** ERROR *** ");
     RF_nativeError("\nRF-SRC:  Invalid selected coe.trim index:  %10d", SG_coeTrimIndex);
     RF_nativeExit();

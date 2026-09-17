@@ -1132,9 +1132,11 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
   rule <- as.character(rule[[1L]])
   trim.index <- suppressWarnings(as.integer(config$coe.trim.index)[1L])
   if (!is.na(trim.index) && trim.index == 0L) rule <- "median"
-  if (!(rule %in% c("trimmed.mean", "median", "mean"))) return(NULL)
+  if (!(rule %in% c("max.robust", "trimmed.mean", "median", "mean"))) {
+    return(NULL)
+  }
   trim <- NA_real_
-  if (identical(rule, "trimmed.mean")) {
+  if (rule %in% c("max.robust", "trimmed.mean")) {
     selected <- suppressWarnings(as.double(config$coe.trim.selected)[1L])
     if (is.finite(selected)) {
       trim <- selected
@@ -1172,7 +1174,10 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
   }
   trim <- options$trim
   if (!is.finite(trim) || trim < 0 || trim > 0.5) return(NA_real_)
-  if (trim <= 0) return(mean(value))
+  if (trim >= 0.5) return(stats::median(value))
+  if (identical(options$rule, "trimmed.mean") && trim <= 0) {
+    return(mean(value))
+  }
   cutpoint <- stats::quantile(
     value,
     probs = c(trim, 1 - trim),
@@ -1180,6 +1185,24 @@ print.auct.rhf <- function(x, digits = 4, max.rows = 8, ...) {
     names = FALSE,
     na.rm = TRUE
   )
+  if (identical(options$rule, "max.robust")) {
+    maximum <- max(value)
+    below.maximum <- value < maximum
+    if (sum(value == maximum) > 1L &&
+        any(below.maximum) &&
+        cutpoint[[2L]] == maximum) {
+      reduced.upper <- stats::quantile(
+        value[below.maximum],
+        probs = 1 - trim,
+        type = 8,
+        names = FALSE,
+        na.rm = TRUE
+      )
+      if (reduced.upper >= cutpoint[[1L]]) {
+        cutpoint[[2L]] <- reduced.upper
+      }
+    }
+  }
   mean(pmin(pmax(value, cutpoint[[1L]]), cutpoint[[2L]]))
 }
 .rhf.incident.restore.from.trees <- function(object, Z, ensemble,

@@ -59,7 +59,7 @@ void calculateAllTerminalNodeOutcomesTDC(char mode,
   getLocalNelsonAalen(treeID, parent);
   getNelsonAalen(treeID, parent);
   getRatio(treeID, parent);
-  if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+  if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
     if ((RF_optHigh & OPT_TERM_OUTG) ||
         (RF_opt & OPT_IENS) ||
         (RF_opt & OPT_OENS) ||
@@ -627,7 +627,7 @@ void assignAllTerminalNodeOutcomesTDC(char mode,
   getLocalNelsonAalen(treeID, parent);
   getNelsonAalen(treeID, parent);
   getRatio(treeID, parent);
-  if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+  if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
     if ((RF_optHigh & OPT_TERM_OUTG) ||
         (RF_opt & OPT_IENS) ||
         (RF_opt & OPT_OENS) ||

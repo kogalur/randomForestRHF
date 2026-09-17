@@ -522,10 +522,7 @@ char rhfMain(char mode, int seedValue) {
           for (bb = 1; bb <= RF_getTreeCount; bb++) {
             acquireTree(mode, RF_getTreeIndex[bb]);
           }
-          if (SG_optLocal &
-              (SG_OPT_SWTCH_FOUR |
-               SG_OPT_SWTCH_FIVE |
-               SG_OPT_SWTCH_SIX)) {
+          if (SG_optLocal & SG_OPT_COE_AGG) {
             uint coeSubjCount;
             uint supportedSubjectCount;
             uint optimizedTrimIndex;
@@ -536,7 +533,7 @@ char rhfMain(char mode, int seedValue) {
             for (bb = 1; bb <= coeSubjCount; bb++) {
               populateCOEEnsembleSupport(mode, bb);
             }
-            if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+            if ((SG_optLocal & SG_OPT_COE_TRIM) &&
                 (mode != RF_PRED) &&
                 (RF_opt & OPT_OENS) &&
                 (SG_coeTrimSize > 1)) {
@@ -559,7 +556,7 @@ char rhfMain(char mode, int seedValue) {
                 coeOOBRiskPrecomputed = TRUE;
               }
             }
-            else if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+            else if ((SG_optLocal & SG_OPT_COE_TRIM) &&
                      (mode != RF_PRED) &&
                      (RF_opt & OPT_OENS) &&
                      (SG_coeTrimSize == 1)) {
@@ -567,11 +564,18 @@ char rhfMain(char mode, int seedValue) {
             }
             if ((SG_coeTrimIndex > SG_coeTrimSize) ||
                 ((SG_coeTrimIndex == SG_COE_TRIM_INDEX_MEDIAN_FALLBACK) &&
-                 ((SG_optLocal & SG_OPT_SWTCH_FIVE) == 0))) {
+                 ((SG_optLocal & SG_OPT_COE_TRIM) == 0))) {
               RF_nativeError("\nRF-SRC:  *** ERROR *** ");
               RF_nativeError("\nRF-SRC:  Invalid selected coe.trim index:  %10d",
                              SG_coeTrimIndex);
               RF_nativeExit();
+            }
+            if ((SG_optLocal & SG_OPT_COE_TRIM) &&
+                (SG_coeTrimIndex != SG_COE_TRIM_INDEX_MEDIAN_FALLBACK) &&
+                (SG_coeTrim[SG_coeTrimIndex] >=
+                 SG_COE_TRIM_MEDIAN_FALLBACK_THRESHOLD)) {
+              SG_coeTrimIndex = SG_COE_TRIM_INDEX_MEDIAN_FALLBACK;
+              coeOOBRiskPrecomputed = FALSE;
             }
             if (SG_coeTrimIndex_ != NULL) {
               SG_coeTrimIndex_[1] = SG_coeTrimIndex;
@@ -584,7 +588,7 @@ char rhfMain(char mode, int seedValue) {
               (RF_opt & OPT_OENS) ||
               (RF_opt & OPT_IENS) ||
               (RF_opt & OPT_FENS)) {
-            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) == 0) {
+            if ( (SG_optLocal & SG_OPT_COE_AGG) == 0) {
               normalizeEnsembleEstimates(mode);
             }
             populateEnsembleIds(mode);
@@ -592,7 +596,7 @@ char rhfMain(char mode, int seedValue) {
                               (SG_optLocal & SG_OPT_WMODE) >> 16,
                               SG_coeTrimIndex,
                               coeOOBRiskPrecomputed);
-            if ((SG_optLocal & SG_OPT_SWTCH_FIVE) &&
+            if ((SG_optLocal & SG_OPT_COE_TRIM) &&
                 (mode != RF_PRED) &&
                 (RF_opt & OPT_OENS) &&
                 (SG_coeTrimSize == 1)) {
@@ -602,10 +606,7 @@ char rhfMain(char mode, int seedValue) {
                 SG_coeTrimRiskOOB_[1] = scalarRisk;
               }
             }
-            if ((SG_optLocal &
-                 (SG_OPT_SWTCH_FOUR |
-                  SG_OPT_SWTCH_FIVE |
-                  SG_OPT_SWTCH_SIX)) == 0) {
+            if ((SG_optLocal & SG_OPT_COE_AGG) == 0) {
               calculateRiskRaw(mode);
             }
             finalizePathDomainOutputs(mode);
@@ -661,7 +662,7 @@ char rhfMain(char mode, int seedValue) {
             writeTNQuantitativeObjectsOutput(mode,
                                              SG_termNelsonAalen_ptr,
                                              SG_termHazard_ptr);
-            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+            if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
               stackTNNodeTimeObjects(mode,
                                      &SG_nodeU_,
                                      &SG_nodeV_,
@@ -699,7 +700,7 @@ char rhfMain(char mode, int seedValue) {
             writeTNQualitativeObjectsOutputTest(mode,
                                                 SG_ombrTNodeCT_ptr,
                                                 SG_ombrTNodeID_ptr);
-            if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+            if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
               stackTNNodeTimeObjects(mode,
                                      &SG_nodeU_,
                                      &SG_nodeV_,

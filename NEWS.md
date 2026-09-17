@@ -1,5 +1,12 @@
-# randomForestRHF 2.0.3
+# randomForestRHF 2.1.0
 
+* Added `coe.aggregate = "max.robust"` as the default COE ensemble aggregation for new fits, with additional protection against repeated maximum tree contributions. The correction can also apply at `coe.trim = 0`; `trimmed.mean`, `median`, and `mean` remain available.
+* Extended OOB trim selection and fitted hazard configuration to `max.robust`. Prediction reuses the fitted aggregation policy and selected trim, while restore recomputes the trim selection from OOB risk.
+* Standardized `coe.trim = 0.5` as an explicit exact-median endpoint for both `max.robust` and `trimmed.mean`, including fixed, adaptively selected, and inherited prediction settings, with consistent risk evaluation and selected-aggregation metadata.
+* Updated `auct.rhf()` to use the fitted `max.robust` rule when reconstructing cumulative/dynamic markers and recovering incident markers from retained tree-level arrays, including repeated-maximum correction and the exact-median endpoint.
+
+# randomForestRHF 2.0.3
+    
 * Added direct `Surv(time, event)` support to fitting, prediction, restore, and tree-size tuning. Ordinary right-censored data are converted internally to one interval per subject, fitted forests retain the original response map, and `predict.rhf()` accepts test data using the original time/event column names; the four-argument counting-process interface remains available for time-dependent covariates.
 * Distinguished public prediction domains by original response format across grow, restore, and outcome-bearing prediction. Right-censored, time-static fits now return hazard and CHF over the complete forest horizon; counting-process fits keep hazards `NA` outside supplied paths, keep CHF flat through internal gaps, and set CHF to `NA` after each subject's final stop.
 * Made the tree-size tuning preflight use the same normalized data, event-process classification, and event-supported bounds as `rhf()`, including when an explicit upper bound is supplied.

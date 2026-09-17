@@ -14,25 +14,28 @@
 #include "terminal.h"
 #include "shared/nrutil.h"
 #include "shared/error.h"
-#define SG_COE_AGG_MEDIAN 0x01
-#define SG_COE_AGG_WINSOR 0x02
-#define SG_COE_AGG_MEAN   0x03
+#define SG_COE_AGG_MEDIAN     0x01
+#define SG_COE_AGG_WINSOR     0x02
+#define SG_COE_AGG_MEAN       0x03
+#define SG_COE_AGG_MAX_ROBUST 0x04
 static char coeGetAggregateType(uint trimIndex) {
   char aggregateType;
   aggregateType = 0;
-  if (SG_optLocal & SG_OPT_SWTCH_FOUR) {
+  if ((trimIndex == SG_COE_TRIM_INDEX_MEDIAN_FALLBACK) &&
+      (SG_optLocal & SG_OPT_COE_TRIM)) {
+    aggregateType = SG_COE_AGG_MEDIAN;
+  }
+  else if (SG_optLocal & SG_OPT_SWTCH_FOUR) {
     aggregateType = SG_COE_AGG_MEDIAN;
   }
   else if (SG_optLocal & SG_OPT_SWTCH_FIVE) {
-    if (trimIndex == SG_COE_TRIM_INDEX_MEDIAN_FALLBACK) {
-      aggregateType = SG_COE_AGG_MEDIAN;
-    }
-    else {
-      aggregateType = SG_COE_AGG_WINSOR;
-    }
+    aggregateType = SG_COE_AGG_WINSOR;
   }
   else if (SG_optLocal & SG_OPT_SWTCH_SIX) {
     aggregateType = SG_COE_AGG_MEAN;
+  }
+  else if (SG_optLocal & SG_OPT_SWTCH_SEVEN) {
+    aggregateType = SG_COE_AGG_MAX_ROBUST;
   }
   else {
     RF_nativeError("\nRF-SRC:  *** ERROR *** ");
@@ -113,7 +116,10 @@ static double coeMedianSorted(double *value, uint count) {
     return 0.5 * (value[mid] + value[mid + 1]);
   }
 }
-static double coeQuantileType8Sorted(double *value, uint count, double probability) {
+static double coeQuantileType8Sorted(double *value,
+                                       uint count,
+                                       double probability,
+                                       char exactTieFlag) {
   double h;
   double gamma;
   uint j;
@@ -135,28 +141,18 @@ static double coeQuantileType8Sorted(double *value, uint count, double probabili
   }
   j = (uint) floor(h);
   gamma = h - ((double) j);
+  if ((exactTieFlag == TRUE) && (value[j] == value[j + 1])) {
+    return value[j];
+  }
   return (1.0 - gamma) * value[j] + gamma * value[j + 1];
 }
-static double coeWinsorizedMeanValues(double *value, uint count, uint trimIndex) {
-  double lower;
-  double upper;
+static double coeClippedMeanSorted(double *value,
+                                   uint count,
+                                   double lower,
+                                   double upper) {
   double clipped;
   double sum;
-  double trim;
   uint i;
-  if (count == 0) {
-    return RF_nativeNaN;
-  }
-  trim = SG_coeTrim[trimIndex];
-  if (trim <= 0.0) {
-    return coeMeanValues(value, count);
-  }
-  if (trim > 0.5) {
-    trim = 0.5;
-  }
-  qsort(value + 1, count, sizeof(double), coeCompareDoubles);
-  lower = coeQuantileType8Sorted(value, count, trim);
-  upper = coeQuantileType8Sorted(value, count, 1.0 - trim);
   sum = 0.0;
   for (i = 1; i <= count; i++) {
     clipped = value[i];
@@ -170,16 +166,91 @@ static double coeWinsorizedMeanValues(double *value, uint count, uint trimIndex)
   }
   return sum / ((double) count);
 }
+static uint coeNonMaximumCountSorted(double *value, uint count) {
+  uint nonMaximumCount;
+  nonMaximumCount = count;
+  while ((nonMaximumCount > 0) &&
+         (value[nonMaximumCount] == value[count])) {
+    nonMaximumCount--;
+  }
+  return nonMaximumCount;
+}
+static double coeWinsorizedMeanSorted(double *value,
+                                      uint count,
+                                      double trim,
+                                      double zeroTrimMean,
+                                      char maxRobustFlag,
+                                      uint nonMaximumCount) {
+  char maxCorrectionFlag;
+  double lower;
+  double reducedUpper;
+  double upper;
+  if (trim >= SG_COE_TRIM_MEDIAN_FALLBACK_THRESHOLD) {
+    return coeMedianSorted(value, count);
+  }
+  if (trim <= 0.0) {
+    trim = 0.0;
+  }
+  lower = coeQuantileType8Sorted(value,
+                                 count,
+                                 trim,
+                                 maxRobustFlag);
+  upper = coeQuantileType8Sorted(value,
+                                 count,
+                                 1.0 - trim,
+                                 maxRobustFlag);
+  maxCorrectionFlag = FALSE;
+  if ((maxRobustFlag == TRUE) &&
+      (nonMaximumCount > 0) &&
+      ((count - nonMaximumCount) > 1) &&
+      (upper == value[count])) {
+    reducedUpper = coeQuantileType8Sorted(value,
+                                          nonMaximumCount,
+                                          1.0 - trim,
+                                          TRUE);
+    if (reducedUpper >= lower) {
+      upper = reducedUpper;
+      maxCorrectionFlag = TRUE;
+    }
+  }
+  if ((trim == 0.0) && (maxCorrectionFlag == FALSE)) {
+    return zeroTrimMean;
+  }
+  return coeClippedMeanSorted(value, count, lower, upper);
+}
+static double coeWinsorizedMeanValues(double *value,
+                                      uint count,
+                                      uint trimIndex,
+                                      char maxRobustFlag) {
+  double trim;
+  double zeroTrimMean;
+  uint nonMaximumCount;
+  if (count == 0) {
+    return RF_nativeNaN;
+  }
+  trim = SG_coeTrim[trimIndex];
+  zeroTrimMean = coeMeanValues(value, count);
+  if ((maxRobustFlag == FALSE) && (trim <= 0.0)) {
+    return zeroTrimMean;
+  }
+  qsort(value + 1, count, sizeof(double), coeCompareDoubles);
+  nonMaximumCount = count;
+  if (maxRobustFlag == TRUE) {
+    nonMaximumCount = coeNonMaximumCountSorted(value, count);
+  }
+  return coeWinsorizedMeanSorted(value,
+                                 count,
+                                 trim,
+                                 zeroTrimMean,
+                                 maxRobustFlag,
+                                 nonMaximumCount);
+}
 static void coeWinsorizedMeanAllTrimSorted(double *value,
                                            uint count,
                                            double zeroTrimMean,
-                                           double *aggregate) {
-  double lower;
-  double upper;
-  double clipped;
-  double sum;
-  double trim;
-  uint i;
+                                           double *aggregate,
+                                           char maxRobustFlag) {
+  uint nonMaximumCount;
   uint trimIndex;
   if (count == 0) {
     for (trimIndex = 1; trimIndex <= SG_coeTrimSize; trimIndex++) {
@@ -187,29 +258,18 @@ static void coeWinsorizedMeanAllTrimSorted(double *value,
     }
     return;
   }
+  nonMaximumCount = count;
+  if (maxRobustFlag == TRUE) {
+    nonMaximumCount = coeNonMaximumCountSorted(value, count);
+  }
   for (trimIndex = 1; trimIndex <= SG_coeTrimSize; trimIndex++) {
-    trim = SG_coeTrim[trimIndex];
-    if (trim <= 0.0) {
-      aggregate[trimIndex] = zeroTrimMean;
-      continue;
-    }
-    if (trim > 0.5) {
-      trim = 0.5;
-    }
-    lower = coeQuantileType8Sorted(value, count, trim);
-    upper = coeQuantileType8Sorted(value, count, 1.0 - trim);
-    sum = 0.0;
-    for (i = 1; i <= count; i++) {
-      clipped = value[i];
-      if (clipped < lower) {
-        clipped = lower;
-      }
-      else if (clipped > upper) {
-        clipped = upper;
-      }
-      sum += clipped;
-    }
-    aggregate[trimIndex] = sum / ((double) count);
+    aggregate[trimIndex] =
+      coeWinsorizedMeanSorted(value,
+                              count,
+                              SG_coeTrim[trimIndex],
+                              zeroTrimMean,
+                              maxRobustFlag,
+                              nonMaximumCount);
   }
 }
 static double coeAggregateValues(double *value, uint count, char aggregateType, uint trimIndex) {
@@ -221,7 +281,9 @@ static double coeAggregateValues(double *value, uint count, char aggregateType, 
     qsort(value + 1, count, sizeof(double), coeCompareDoubles);
     return coeMedianSorted(value, count);
   case SG_COE_AGG_WINSOR:
-    return coeWinsorizedMeanValues(value, count, trimIndex);
+    return coeWinsorizedMeanValues(value, count, trimIndex, FALSE);
+  case SG_COE_AGG_MAX_ROBUST:
+    return coeWinsorizedMeanValues(value, count, trimIndex, TRUE);
   case SG_COE_AGG_MEAN:
     return coeMeanValues(value, count);
   default:
@@ -303,14 +365,17 @@ static void getCOEOOBCaseHazardAggregateAllTrim(uint caseID,
                                                 double *aggregate) {
   double zeroTrimMean;
   char aggregateType;
+  char maxRobustFlag;
   uint count;
   uint trimIndex;
   aggregateType = coeGetAggregateType(1);
-  if (aggregateType != SG_COE_AGG_WINSOR) {
+  if ((aggregateType != SG_COE_AGG_WINSOR) &&
+      (aggregateType != SG_COE_AGG_MAX_ROBUST)) {
     RF_nativeError("\nRF-SRC:  *** ERROR *** ");
-    RF_nativeError("\nRF-SRC:  Batched coe.trim evaluation requires winsorized-mean aggregation.");
+    RF_nativeError("\nRF-SRC:  Batched coe.trim evaluation requires trim-selected aggregation.");
     RF_nativeExit();
   }
+  maxRobustFlag = (aggregateType == SG_COE_AGG_MAX_ROBUST);
   count = coeCollectOOBCaseHazardValues(caseID,
                                         subjIndex,
                                         timeIndex,
@@ -328,7 +393,8 @@ static void getCOEOOBCaseHazardAggregateAllTrim(uint caseID,
   coeWinsorizedMeanAllTrimSorted(value,
                                  count,
                                  zeroTrimMean,
-                                 aggregate);
+                                 aggregate,
+                                 maxRobustFlag);
 }
 void updateCOEObjectsGrow(char mode, uint treeID) {
   LeafLinkedObj *leafLinkedPtr;

@@ -50,7 +50,7 @@ void stackDefinedOutputObjects(char mode) {
       RF_stackCount += 4;
       RF_stackCount += 2;
       RF_stackCount += 2;
-      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+      if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
         RF_stackCount += 4;
         if ((RF_opt & OPT_IENS) || (RF_opt & OPT_FENS)) {
           RF_stackCount += 2;
@@ -95,7 +95,7 @@ void stackDefinedOutputObjects(char mode) {
     }
     if (RF_optHigh & OPT_TERM_OUTG) {
       RF_stackCount += 2; 
-      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+      if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
         RF_stackCount += 4;
         if (RF_opt & OPT_FENS) {
           RF_stackCount += 2;
@@ -114,7 +114,7 @@ void stackDefinedOutputObjects(char mode) {
       RF_stackCount += 1; 
     }
   }
-  if (SG_optLocal & SG_OPT_SWTCH_FIVE) {
+  if (SG_optLocal & SG_OPT_COE_TRIM) {
     RF_stackCount += 1;  
     if ((mode != RF_PRED) && (RF_opt & OPT_OENS)) {
       RF_stackCount += 1;  
@@ -355,7 +355,7 @@ void stackDefinedOutputObjects(char mode) {
                                                        1,
                                                        localSize);
       (*integralHazardPtr) --;
-      if ( (SG_optLocal & (SG_OPT_SWTCH_FOUR | SG_OPT_SWTCH_FIVE | SG_OPT_SWTCH_SIX)) != 0) {
+      if ( (SG_optLocal & SG_OPT_COE_AGG) != 0) {
         (oobFlag == TRUE) ? (sexpIdentity = SG_COE_HAZR_TREE_OOB) : ((fullFlag == TRUE) ? sexpIdentity = SG_COE_HAZR_TREE_IBG : 0);
         localSize = RF_ntree * RF_sortedTimeInterestSize * subjSize;
         *coeHazardTree = (double*) stackAndProtect(RF_auxDimConsts,
@@ -481,7 +481,7 @@ void stackDefinedOutputObjects(char mode) {
   }
   SG_coeTrimIndex_ = NULL;
   SG_coeTrimRiskOOB_ = NULL;
-  if (SG_optLocal & SG_OPT_SWTCH_FIVE) {
+  if (SG_optLocal & SG_OPT_COE_TRIM) {
     SG_coeTrimIndex_ = (uint *) stackAndProtect(
       RF_auxDimConsts,
       mode,
