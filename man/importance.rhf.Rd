@@ -17,9 +17,12 @@ Computes time-localized variable importance for a random hazard forest
 rule and near-miss memberships to pseudo-individuals whose start-stop
 intervals overlap selected windows from the master time grid
 \code{time.interest}. The working response used for VarPro importance is
-now taken directly from the RHF object as the logarithm of the upstream
+taken directly from the RHF object as the logarithm of the upstream
 integrated hazard exposure, giving a fast localized view of how variable
-importance evolves over time.
+importance evolves over time. Setting \code{guided = TRUE} extracts the
+rules from a guided forest, which applies the split weight
+regularization of VarPro and yields sparse importance in high
+dimensions.
 }
 
 \usage{
@@ -32,6 +35,9 @@ importance.rhf(o,
  max.tree,
  eps = 1e-6,
  y.external = NULL,
+ guided = FALSE,
+ xvar.wt = NULL,
+ guided.args = list(),
  verbose = FALSE,
  ...)
 
@@ -40,6 +46,9 @@ varpro.cache.rhf(o,
  max.tree = 150L,
  y.external = NULL,
  eps = 1e-6,
+ guided = FALSE,
+ xvar.wt = NULL,
+ guided.args = list(),
  verbose = FALSE)
 
 \method{print}{importance.rhf}(x,
@@ -174,7 +183,8 @@ barplot.importance.rhf(x,
   window in decreasing importance before the long-format output is assembled.}
 
   \item{max.rules.tree, max.tree}{Arguments controlling rule extraction when
-  the cache is built.}
+  the cache is built. With \code{guided = TRUE}, \code{max.tree} is also
+  the number of trees in the guided rule forest.}
 
   \item{y.external}{Optional externally supplied working response. When
   \code{NULL}, the working response is built internally from the RHF object's
@@ -183,15 +193,52 @@ barplot.importance.rhf(x,
   \item{eps}{Nonnegative value added before taking the logarithm of the
   integrated hazard exposure when \code{y.external} is not supplied.}
 
+  \item{guided}{Logical. If \code{TRUE}, a guided forest is constructed
+  and its rules are used for the VarPro calculation. Split weights are
+  computed from the records stored in \code{o} by the screening
+  described in Details, a rule forest is grown on the retained variables
+  with these weights, and the rules are extracted from this forest. The
+  forest \code{o} is unchanged. When \code{o} is itself a guided forest,
+  meaning it was grown with nonuniform \code{xvar.wt} (for example with
+  \code{\link{xvar.wt.rhf}}), no new forest is grown and the rules of
+  \code{o} are used. When no screen retains a variable, the rules of
+  \code{o} are used, a warning is issued, and the result reports
+  \code{guided = FALSE} with \code{guided.status = "screening failed"}.
+  Applies when \code{cache} is \code{NULL}.
+
+  The default \code{FALSE} describes the forest \code{o} itself and is
+  reproducible given \code{o}.  \code{TRUE} is recommended when there
+  are many variables, roughly \code{p >= 50}, or whenever the unguided
+  importance leaves most variables with a nonzero value: it gives a much
+  sparser importance at the cost of growing a second forest, with the
+  caveats described under Guided rule generation in Details.}
+
+  \item{xvar.wt}{Optional named vector of split weights for the guided
+  rule forest. Supplying \code{xvar.wt} implies \code{guided = TRUE} and
+  replaces the internal split weight calculation. Variables with zero
+  weight are removed from rule generation.}
+
+  \item{guided.args}{Named list of options for the split weight
+  calculation and the guided rule forest. Entries are \code{method},
+  \code{nvar}, \code{sparse}, \code{ntree.reduce},
+  \code{treesize.reduce}, \code{nsplit.reduce}, \code{mtry.reduce},
+  \code{lasso.family}, \code{lasso.ncut}, \code{lasso.s},
+  \code{nfolds}, \code{max.subjects}, \code{seed}, and
+  \code{mtry.guided}, the number of candidate variables per split in
+  the guided rule forest (default one third of the retained variables).
+  See \code{\link{xvar.wt.rhf}}.}
+
   \item{verbose}{Logical. If \code{TRUE}, reports cache construction and
   per-window progress.}
 
   \item{x}{An object of class \code{"importance.rhf"}.}
 
   \item{top, rank.by}{Arguments used by \code{print()} and by
-  \code{plot(type = "lines")}. Printing now ranks variables robustly over
+  \code{plot()}. Printing now ranks variables robustly over
   time by default using \code{rank.by = "q90"}. The line plot also uses
-  \code{rank.by} when \code{vars} is omitted.}
+  \code{rank.by} when \code{vars} is omitted. For the matrix plots, a
+  supplied \code{top} sets \code{top.n.union}, the number of variables
+  taken from each time window, unless \code{top.n.union} is also given.}
 
   \item{digits, scientific.threshold}{Formatting controls for
   \code{print()}, used to keep very large importance values readable.}
@@ -212,7 +259,10 @@ barplot.importance.rhf(x,
   gives a line, step, or smoothed view for selected variables. When \code{vars}
   is omitted, the line plot chooses \code{top} variables using \code{rank.by},
   while the dot-matrix and bar-matrix plots use the union of the top
-  \code{top.n.union} variables across time.}
+  \code{top.n.union} variables across time. The per-window ranking counts
+  only variables with a value the plot draws, positive values or, when
+  \code{color.by = "sign"}, nonzero values, so a window with few rules
+  does not add rows that have nothing to show.}
 
   \item{curve, smooth.f, lty, lwd, line.colors, line.args, display.cap,
   display.note}{Arguments for \code{type = "lines"}. \code{curve} chooses
@@ -315,13 +365,68 @@ localization comes from restricting the calculation to records active in
 each time window, rather than rebuilding the rules or refitting the
 forest at each time point.
 
+\strong{Guided rule generation}
+
+In high dimensions localized importance lacks sparsity which can impact
+the ability to delineate real signal from noise.  Guided forests
+provides a regularization technique to combat this.  Setting
+\code{guided = TRUE} constructs a guided forest and uses its rules for
+the VarPro calculation.  Split weights used for guiding tree splitting
+are computed from the counting process records by two screens.  A lasso
+for the hazard defines the first screen.  The default likelihood is the
+piecewise exponential model, the Poisson approximation to the Cox model,
+with records split at \code{lasso.ncut} baseline cut points and log
+exposure as offset; the Cox partial likelihood on \code{Surv(start,
+stop, event)} is available through \code{lasso.family = "cox"} at a
+higher computational cost.  Subject level cross-validation folds select
+the penalty at \code{lambda.min}.  The absolute standardized
+coefficients are the weights, and variables outside the lasso support
+receive zero.  The second screen uses a RHF of shallow trees; weights
+are set to the observed forest averaged splitting frquency of a
+variable.  Each screen is scaled to a maximum of one and raised to a
+power that increases with the size of its support, evaluated on the
+support that survives the cap on \code{nvar}, and the two screens are
+summed.  The top \code{nvar} variables are retained and all other
+variables receive weight zero.  See \code{\link{xvar.wt.rhf}} for the
+details of both screens.
+
+The guided rule forest is grown by setting \code{xvar.wt} to the split
+weights.  It uses the same records, time grid, and tree settings as
+\code{o} (\code{mtry} is set to one third of the retained variables).
+When \code{o} is itself a guided forest, meaning it was grown with
+nonuniform \code{xvar.wt}, no new forest is grown and the rules of
+\code{o} are used.  Supplying \code{xvar.wt} to \code{importance.rhf()}
+grows the rule forest with those weights and skips the screening.  When
+no screen retains a variable, no forest is grown, the rules of \code{o}
+are used, and the result reports \code{guided = FALSE} with
+\code{guided.status = "screening failed"}; \code{method = "lasso"} alone
+is a linear screen and fails this way on nonlinear signals, which the
+default tree screen is designed to detect.
+
+\emph{When to use it.}  Guided importance mainly suppresses noise rather
+than finding more signal.  In simulations with 10 to 200 variables it
+ranks the true variables about as well as the unguided importance,
+while the number of noise variables with nonzero importance drops by
+two thirds or more.  Because the split weights are sparse, a weak but
+real effect can receive exactly zero importance, which the unguided
+importance does not do, and with few variables the second forest is
+pure overhead; \code{guided} is therefore \code{FALSE} by default and
+worth switching on when there are many variables (roughly \code{p >=
+50}) or when the unguided importance is not sparse.  Two practical
+points: the rule forest is grown with its own random seed unless
+\code{guided.args$seed} is set, so repeated calls on the same \code{o}
+differ slightly; and the lasso screen needs the suggested package
+\code{glmnet} (without it the tree screen alone is used, with a
+warning).
+
 The helper \code{varpro.cache()} stores the minimum information needed
 for repeated localized importance calculations: a regression-style rule
 template, window metadata, the working response source, and precomputed
 window-local rule statistics. During cache construction, raw OOB and
 complementary memberships are converted into compact per-window rule
 summaries, so the later window sweep does not need to rescan membership
-vectors.
+vectors.  A guided cache also stores the split weights and the retained
+variables.
 
 The returned importance matrix has variables in rows and selected time
 windows in columns. Column names correspond to the right endpoints of
@@ -350,7 +455,8 @@ limits may still be supplied as \code{xlim} or \code{ylim} through \code{...}.
 \code{varpro.cache()} returns an object containing cached rule
 memberships, the working response used for importance, start-stop
 information for pseudo-individuals, time-window metadata, and the rule
-extraction settings.
+extraction settings.  A guided cache also contains \code{guided.info}
+with the split weights and the retained variables.
 
 \code{importance.rhf()} returns a list including:
 
@@ -364,6 +470,19 @@ extraction settings.
   \item \code{y.source}: source of the working response. This is
   \code{"int.haz.oob"}, \code{"int.haz.test"}, or \code{"y.external"}.
   \item \code{trim}: tuning value used in importance aggregation.
+  \item \code{guided}: logical. \code{TRUE} when the rules came from a
+  guided forest.
+  \item \code{guided.status}: one of \code{"unguided"},
+  \code{"guided"}, \code{"already guided"}, or
+  \code{"screening failed"}.
+  \item \code{split.weight}: named vector of split weights over all
+  variables when \code{guided} is \code{TRUE}, otherwise \code{NULL}.
+  \item \code{split.weight.raw}: list of the raw screening components
+  when the split weights were computed internally, including the case
+  where the screening failed.
+  \item \code{xvar.selected}: variables retained for rule generation
+  when \code{guided} is \code{TRUE}.
+  \item \code{xvar.names.all}: all variables of the forest \code{o}.
 }
 
 \code{print()} returns its input invisibly after displaying a short summary
@@ -385,20 +504,20 @@ containing the selected variable codes, resolved labels and time values.
 }
 
 \references{
-  
+
   Ishwaran H. (2025). Multivariate Statistics: Classical Foundations and
   Modern Machine Learning.  Chapman and Hall.
 
   Ishwaran H., Kogalur U.B., Hsich E.M. and Lee D.K. (2026).  Random
   hazard forests.
-  
+
   Lu, M. and Ishwaran, H. (2024). Model-independent variable selection
   via the rule-based variable priority. arXiv e-prints, pp.arXiv-2409.
 
   Lu, M. and Ishwaran, H. (2025). Individual variable priority: a
   model-independent local gradient method for variable importance.
   \emph{Artificial Intelligence Review}, 58:407.
-  
+
   Zhou L., Lu M. and Ishwaran H. (2026).  Variable priority for
   unsupervised variable selection.  \emph{Pattern Recognition},
   172:112727.
@@ -408,7 +527,8 @@ containing the selected variable codes, resolved labels and time values.
 
 
 \seealso{
-  \code{\link{rhf}}
+  \code{\link{rhf}},
+  \code{\link{xvar.wt.rhf}}
 }
 
 \examples{
@@ -478,6 +598,36 @@ imp.t.sub <- importance.rhf(
 
 ## long-format export
 print(head(as.data.frame(imp.t.sub)))
+
+
+################################################################
+##
+## guided importance in high dimension
+##
+################################################################
+
+## add noise variables to the simulation
+d.noise <- data.frame(d, matrix(rnorm(nrow(d) * 200), nrow(d),
+                                dimnames = list(NULL, paste0("noise", 1:200))))
+
+## unguided forest
+o.hd <- rhf(f, d.noise, ntree = 100)
+
+## guided importance: split weights are computed from the records of
+## o.hd and the rules come from an internal guided rule forest
+imp.g <- importance.rhf(o.hd, guided = TRUE, verbose = TRUE)
+print(imp.g)
+print(imp.g$xvar.selected)
+
+oldpar <- par(mfrow=c(1,1))
+plot(imp.g)
+par(oldpar)
+
+## reuse a guided cache
+cache.g <- varpro.cache(o.hd, guided = TRUE)
+imp.g.sub <- importance.rhf(o.hd, cache = cache.g,
+                time.index = seq(1, length(o.hd$time.interest), by = 5))
+print(imp.g.sub)
 }
 }
 

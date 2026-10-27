@@ -130,18 +130,23 @@ hazard.1 <- function(n = 500, p = 10, nrecords = 7, scale = FALSE, ngrid = 1e5) 
   }
   dta$start <- s * dta$start
   dta$stop  <- s * dta$stop
-  ## true hazard for data (ID-aligned; accounts for time scaling)
-  haz <- function(time, x) {
+  ## true hazard for data (ID-aligned; accounts for time scaling).
+  ## xtd: optional intervention on the time-varying covariate, held at this
+  ## value for all t (one value, or one per subject): z_2 t = 1.5 x_td is
+  ## replaced by 1.5 xtd, so h = (1 + 1.5 xtd) exp(z_1 + 1.5 xtd)
+  haz <- function(time, x, xtd = NULL) {
     ids  <- x[, "id"]
     ## original-time evaluation point for theory-based hazard
     time <- sort(time)
     t0   <- time / s                         # map scaled time back to original
     X    <- x[match(unique(ids), ids), grepl("^x\\.", names(x)), drop = FALSE]
+    if (!is.null(xtd)) xtd <- rep_len(as.numeric(xtd), nrow(X))
     out  <- do.call(rbind, lapply(seq_len(nrow(X)), function(i) {
       x4 <- X[i, 4]; x5 <- X[i, 5]
       z1 <- 1.5 * X[i, 1]
       z2 <- 1.5 * (x4 + x5)
-      h0 <- (1 + z2 * t0) * exp(z1 + z2 * t0)  # hazard in original time
+      z2t <- if (is.null(xtd)) z2 * t0 else rep(1.5 * xtd[i], length(t0))
+      h0 <- (1 + z2t) * exp(z1 + z2t)          # hazard in original time
       h0 / s                                   # transform to scaled-time hazard
     }))
     rownames(out) <- as.character(unique(ids))
@@ -272,30 +277,35 @@ hazard.2b <- function(n = 500, p = 10, nrecords = 7, scale = FALSE,
   dta$start <- s * dta$start
   dta$stop <- s * dta$stop
   truth <- data.frame(id = seq_len(n), a = as.numeric(a), b = as.numeric(b))
-  haz <- function(time, x) {
+  ## xtd: optional intervention on the time-varying covariate x_td = a + b t,
+  ## held at this value for all t (one value, or one per subject): the
+  ## subject's path is replaced by a = xtd, b = 0
+  haz <- function(time, x, xtd = NULL) {
     ids <- as.character(x[, "id"])
     id.unq <- unique(ids)
     X <- as.matrix(x[match(id.unq, ids), grepl("^x\\.", names(x)), drop = FALSE])
     t0 <- as.numeric(time) / s
+    if (!is.null(xtd)) xtd <- rep_len(as.numeric(xtd), length(id.unq))
     out <- matrix(NA_real_, nrow = length(id.unq), ncol = length(t0),
                   dimnames = list(id.unq, NULL))
     for (ii in seq_along(id.unq)) {
-      ai <- a[id.unq[ii]]
-      bi <- b[id.unq[ii]]
+      ai <- if (is.null(xtd)) a[id.unq[ii]] else xtd[ii]
+      bi <- if (is.null(xtd)) b[id.unq[ii]] else 0
       out[ii, ] <- vapply(t0, h_i, numeric(1), xi = X[ii, ], ai = ai, bi = bi) / s
     }
     out
   }
-  chf <- function(time, x) {
+  chf <- function(time, x, xtd = NULL) {
     ids <- as.character(x[, "id"])
     id.unq <- unique(ids)
     X <- as.matrix(x[match(id.unq, ids), grepl("^x\\.", names(x)), drop = FALSE])
     t0 <- as.numeric(time) / s
+    if (!is.null(xtd)) xtd <- rep_len(as.numeric(xtd), length(id.unq))
     out <- matrix(NA_real_, nrow = length(id.unq), ncol = length(t0),
                   dimnames = list(id.unq, NULL))
     for (ii in seq_along(id.unq)) {
-      ai <- a[id.unq[ii]]
-      bi <- b[id.unq[ii]]
+      ai <- if (is.null(xtd)) a[id.unq[ii]] else xtd[ii]
+      bi <- if (is.null(xtd)) b[id.unq[ii]] else 0
       out[ii, ] <- vapply(t0, H_i, numeric(1), xi = X[ii, ], ai = ai, bi = bi)
     }
     out
@@ -600,37 +610,49 @@ hazard.3b <- function(n = 500, p = 10, nrecords = 7, scale = FALSE,
   }
   dta$start <- s * dta$start
   dta$stop <- s * dta$stop
-  haz <- function(time, x) {
+  ## xtd1, xtd2: optional interventions on the time-varying covariates
+  ## x_td1 = A4 + B4 t and x_td2 = A5 + B5 t, each held at its value for all
+  ## t (one value, or one per subject): the path is replaced by A = value,
+  ## B = 0; the other covariate keeps the subject's own path
+  haz <- function(time, x, xtd1 = NULL, xtd2 = NULL) {
     time <- as.numeric(time)
     ids <- as.character(x[, "id"])
     id.unq <- unique(ids)
     X <- as.matrix(x[match(id.unq, ids), grepl("^x\\.", names(x)), drop = FALSE])
     t0 <- time / s
+    if (!is.null(xtd1)) xtd1 <- rep_len(as.numeric(xtd1), length(id.unq))
+    if (!is.null(xtd2)) xtd2 <- rep_len(as.numeric(xtd2), length(id.unq))
     out <- matrix(NA_real_, nrow = length(id.unq), ncol = length(t0),
                   dimnames = list(id.unq, NULL))
     for (ii in seq_along(id.unq)) {
       id <- id.unq[ii]
       out[ii, ] <- vapply(t0, h_fun_i, numeric(1L),
                           xi = X[ii, ],
-                          A4 = A4_i[id], A5 = A5_i[id],
-                          B4 = B4_i[id], B5 = B5_i[id]) / s
+                          A4 = if (is.null(xtd1)) A4_i[id] else xtd1[ii],
+                          A5 = if (is.null(xtd2)) A5_i[id] else xtd2[ii],
+                          B4 = if (is.null(xtd1)) B4_i[id] else 0,
+                          B5 = if (is.null(xtd2)) B5_i[id] else 0) / s
     }
     out
   }
-  chf <- function(time, x) {
+  chf <- function(time, x, xtd1 = NULL, xtd2 = NULL) {
     time <- as.numeric(time)
     ids <- as.character(x[, "id"])
     id.unq <- unique(ids)
     X <- as.matrix(x[match(id.unq, ids), grepl("^x\\.", names(x)), drop = FALSE])
     t0 <- time / s
+    if (!is.null(xtd1)) xtd1 <- rep_len(as.numeric(xtd1), length(id.unq))
+    if (!is.null(xtd2)) xtd2 <- rep_len(as.numeric(xtd2), length(id.unq))
     out <- matrix(NA_real_, nrow = length(id.unq), ncol = length(t0),
                   dimnames = list(id.unq, NULL))
     for (ii in seq_along(id.unq)) {
       id <- id.unq[ii]
       out[ii, ] <- vapply(t0, H_fun_i, numeric(1L),
                           xi = X[ii, ],
-                          A4 = A4_i[id], A5 = A5_i[id],
-                          B4 = B4_i[id], B5 = B5_i[id])
+                          A4 = if (is.null(xtd1)) A4_i[id] else xtd1[ii],
+                          A5 = if (is.null(xtd2)) A5_i[id] else xtd2[ii],
+                          B4 = if (is.null(xtd1)) B4_i[id] else 0,
+                          B5 = if (is.null(xtd2)) B5_i[id] else 0)
     }
     out
   }

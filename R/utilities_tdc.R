@@ -488,6 +488,27 @@ convert.counting <- function(f, dta, scale = FALSE) {
              event = dta[[event.nm]],
              dta[, !(colnames(dta) %in% all.vars(f)[1:2]), drop = FALSE])
 }
+## Infinite predictor values.  complete.cases() keeps them, but in the
+## native split search (splitValue - observation) >= 0 is NaN for such a
+## value, the daughter size check then fails and the forest stops from
+## inside the parallel region.  Returns, for each row, whether a numeric
+## predictor is infinite, with the offending column names as an attribute.
+.rhf.infinite.predictor.rows <- function(dta, xvar.names) {
+  bad <- logical(nrow(dta))
+  cols <- character(0)
+  for (nm in intersect(xvar.names, colnames(dta))) {
+    v <- dta[[nm]]
+    if (is.numeric(v)) {
+      inf <- is.infinite(v)
+      if (any(inf)) {
+        bad <- bad | inf
+        cols <- c(cols, nm)
+      }
+    }
+  }
+  attr(bad, "columns") <- cols
+  bad
+}
 ## clean up counting process data
 cleanup.counting <- function(dta,
                              xvar.names = NULL,
@@ -567,6 +588,13 @@ cleanup.counting <- function(dta,
     n.rem <- sum(!cc)
     dta   <- dta[cc, , drop = FALSE]
     warning(sprintf("Removing %d row(s) with missing values.", n.rem))
+  }
+  ## infinite predictor values pass complete.cases(); remove their rows too
+  inf.x <- .rhf.infinite.predictor.rows(dta, xvar.names)
+  if (any(inf.x)) {
+    dta <- dta[!inf.x, , drop = FALSE]
+    warning(sprintf("Removing %d row(s) with infinite predictor values (%s).",
+                    sum(inf.x), paste(attr(inf.x, "columns"), collapse = ", ")))
   }
   ## checks after NA cleaning
   if (nrow(dta) == 0L) {
@@ -787,6 +815,17 @@ cleanup.counting.newdata <- function(newdata,
       "Removing %d row(s) from 'newdata' due to missing values in subject, y, or x.",
       n.drop
     ))
+  }
+  ## infinite predictor values pass complete.cases(); nonfinite.action decides
+  inf.x <- .rhf.infinite.predictor.rows(newdata, xvar.names)
+  if (any(inf.x & cc)) {
+    if (nonfinite.action == "stop") {
+      stop(sprintf("'newdata' has %d row(s) with infinite predictor values (%s); set nonfinite.action = \"drop\" to remove them.",
+                   sum(inf.x & cc), paste(attr(inf.x, "columns"), collapse = ", ")))
+    }
+    warning(sprintf("Removing %d row(s) from 'newdata' with infinite predictor values (%s).",
+                    sum(inf.x & cc), paste(attr(inf.x, "columns"), collapse = ", ")))
+    cc <- cc & !inf.x
   }
   if (!any(cc)) {
     stop("After removing missing values from 'newdata' there are no observations left.")

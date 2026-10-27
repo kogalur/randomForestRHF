@@ -33,8 +33,10 @@ void stackTNQualitativeObjectsTest(char      mode,
                                                 SG_sexpStringOutgoing,
                                                 pSG_ombrTNodeCT_ptr,
                                                 2,
-                                                RF_ntree,
-                                                -2);
+                                                (const AuxiliaryDimension[]) {
+                                                  [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                  [2] = {RF_AUX_DIM_LEAF_COUNT, 0}
+                                                });
     localSize = RF_ntree * RF_fobservationSize;
     *pSG_ombrTNodeID_ = (uint*) stackAndProtect(RF_auxDimConsts,
                                                 mode,
@@ -46,7 +48,7 @@ void stackTNQualitativeObjectsTest(char      mode,
                                                 SG_sexpStringOutgoing,
                                                 NULL,
                                                 1,
-                                                localSize);
+                                                (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
     (*pSG_ombrTNodeID_) --;
   }
 }
@@ -79,7 +81,7 @@ void stackTNQualitativeObjectsForestPtrTest(char     mode,
     if ((offsetID_ombr) != localSize) {
       RF_nativeError("\nRF-SRC:  *** ERROR *** ");
       RF_nativeError("\nRF-SRC:  Inconsistent total test data (ombr) count during aux qualitative pointering:  ");
-      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10d, %10d", offsetID_ombr, localSize);
+      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10llu, %10llu", (unsigned long long) offsetID_ombr, (unsigned long long) localSize);
       RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
       RF_nativeExit();
     }

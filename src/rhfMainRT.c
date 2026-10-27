@@ -308,7 +308,8 @@ char rhfMainRT(char mode, int seedValue) {
                                              RF_rTargetFactor,
                                              RF_rTargetFactorCount,
                                              RF_tLeafCount_,
-                                             RF_holdBLKptr);
+                                             RF_holdBLKptr,
+                                             NULL);  
           for(b = 1; b <= RF_ntree; b++) {
             RF_serialTreeIndex[b] = 0;
           }

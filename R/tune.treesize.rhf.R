@@ -172,6 +172,7 @@ tune.treesize.rhf <- function(formula, data,
   ## Only used when perf = "iAUC"
   iauc.cache       <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
   iauc.se.cache    <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
+  ## Keep error messages internal for the all-candidates-failed diagnostic.
   iauc.error.cache <- if (perf == "iAUC") new.env(parent = emptyenv()) else NULL
   ## ---- helper to evaluate a single treesize
   eval.one <- function(ts) {
@@ -326,27 +327,8 @@ tune.treesize.rhf <- function(formula, data,
         },
         numeric(1)
       )
-      err <- vapply(
-        sizes,
-        function(k) {
-          key <- as.character(k)
-          if (!is.null(iauc.error.cache) &&
-              exists(key, envir = iauc.error.cache, inherits = FALSE)) {
-            value <- get(key, envir = iauc.error.cache, inherits = FALSE)
-            if (is.null(value) || !length(value)) {
-              NA_character_
-            } else {
-              as.character(value)[1L]
-            }
-          } else {
-            NA_character_
-          }
-        },
-        character(1L)
-      )
-      path$iAUC       <- iauc
-      path$iAUC.se    <- se
-      path$auct.error <- err
+      path$iAUC    <- iauc
+      path$iAUC.se <- se
     }
     path
   }
@@ -408,10 +390,13 @@ tune.treesize.rhf <- function(formula, data,
   path <- collect.path()
   if (!any(is.finite(path$risk))) {
     detail <- NULL
-    if ("auct.error" %in% names(path)) {
-      detail <- unique(path$auct.error[
-        !is.na(path$auct.error) & nzchar(path$auct.error)
-      ])
+    if (!is.null(iauc.error.cache)) {
+      detail <- vapply(
+        path$treesize,
+        function(k) get(as.character(k), envir = iauc.error.cache, inherits = FALSE),
+        character(1L)
+      )
+      detail <- unique(detail[!is.na(detail) & nzchar(detail)])
     }
     suffix <- if (length(detail)) {
       paste0(" First auct.rhf() error: ", detail[[1L]])
@@ -500,21 +485,8 @@ plot.tune.treesize.rhf <- function(x,
     if (is.null(ylab)) ylab <- "OOB iAUC.uno"
     if (is.null(main)) main <- "Tuning treesize by OOB iAUC"
     if (!any(is.finite(yy))) {
-      detail <- if ("auct.error" %in% names(path)) {
-        unique(path$auct.error[
-          !is.na(path$auct.error) & nzchar(path$auct.error)
-        ])
-      } else {
-        character(0L)
-      }
-      suffix <- if (length(detail)) {
-        paste0(" First auct.rhf() error: ", detail[[1L]])
-      } else {
-        ""
-      }
       stop(
         "No finite OOB iAUC values are available for plotting.",
-        suffix,
         call. = FALSE
       )
     }

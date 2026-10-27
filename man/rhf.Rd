@@ -1,5 +1,6 @@
 \name{rhf}
 \alias{rhf}
+\alias{xvar.wt.rhf}
 \title{Random Hazard Forests}
 \description{
 
@@ -7,7 +8,9 @@
   estimates case-specific hazards and cumulative hazard functions on a
   working time grid. It accepts ordinary right-censored data through
   \code{Surv(time, event)} and time-dependent covariates through
-  counting-process \code{Surv(id, start, stop, event)} input.
+  counting-process \code{Surv(id, start, stop, event)} input.  The
+  helper \code{xvar.wt.rhf()} computes sparse split weights for guided
+  feature selection in high dimensions.
 
 }
 
@@ -32,6 +35,13 @@ rhf(formula,
       seed = NULL,
       do.trace = FALSE,
       ...)
+
+xvar.wt.rhf(f,
+      d,
+      method = c("lasso", "tree"),
+      nvar = 30L,
+      sparse = TRUE,
+      guided.args = list())
 }
 
 \arguments{
@@ -57,7 +67,7 @@ rhf(formula,
 
   \item{nodesize}{Minimum number of cases required in a terminal
     node. If not specified, an internal default is used.}
-  
+
   \item{block.size}{Controls the granularity of cumulative error rate
   reporting. Setting this to an integer between 1 and \code{ntree}
   yields the cumulative error every \code{block.size} trees.  Currently
@@ -86,7 +96,7 @@ rhf(formula,
 
   \item{membership}{Logical flag indicating whether to return terminal
     node membership and inbag information.}
-  
+
   \item{sampsize}{Specifies the size of the bootstrap sample when
   \code{bootstrap = "by.root"}. For sampling without replacement, it
   represents the requested subsample size (default is 0.632 times the
@@ -95,7 +105,9 @@ rhf(formula,
 
   \item{xvar.wt}{Non-negative vector of variable selection probabilities
   for splitting. Values do not need to sum to 1. Defaults to uniform
-  selection probability.}
+  selection probability. A variable with weight zero is never selected.
+  \code{xvar.wt.rhf()} computes sparse weights for guided feature
+  selection; see Details.}
 
 
   \item{ntime}{Controls the working time grid used for all
@@ -116,11 +128,11 @@ rhf(formula,
      \item{\code{0} or \code{NULL}:}{Use all observed (unique) event times.}
 
  }}
- 
+
  \item{min.events.per.gap}{Minimum number of observed events required in
    each time interval when \code{ntime} is specified as an integer.
    Together with ntime, this provides an automatic event-balanced grid
-   that allocates more resolution where events are dense and avoids 
+   that allocates more resolution where events are dense and avoids
    sparse tail intervals.}
 
   \item{adaptive}{Logical value controlling the default trimmed-mean
@@ -137,6 +149,47 @@ rhf(formula,
   \item{do.trace}{Time in seconds between progress updates printed to the console.}
 
   \item{...}{Additional expert-level controls passed to internal RHF methods.}
+
+  \item{f, d}{Formula and data frame for \code{xvar.wt.rhf()}, in the
+  same forms accepted by \code{rhf()}.}
+
+  \item{method}{Screening components used by \code{xvar.wt.rhf()}.
+  One or more of \code{"lasso"} (penalized hazard regression on the
+  counting process records with subject level cross-validation folds),
+  \code{"tree"}
+  (split frequency from a shallow RHF grown with \code{mtry} equal to
+  the number of variables), and \code{"pilot"} (time-localized
+  importance from a pilot RHF, summarized over time). The default
+  combines the lasso and tree screens. The lasso screen is linear in
+  the variables and on its own misses nonlinear effects; the tree
+  screen is the remedy.}
+
+  \item{nvar}{Number of variables retained by \code{xvar.wt.rhf()}.
+  All other variables receive weight zero.}
+
+  \item{sparse}{Logical. If \code{TRUE}, each screening component is
+  raised to a power that increases with the size of its support, which
+  concentrates the weights on the top ranked variables. If
+  \code{FALSE}, the scaled components are used as they are.}
+
+  \item{guided.args}{Named list of further options for the split weight
+  calculation. The entries are \code{ntree.reduce} (trees in the shallow
+  RHF, default 100), \code{treesize.reduce} (terminal nodes in the
+  shallow RHF, default 4 when there are at most 200 subjects and 8
+  otherwise), \code{nsplit.reduce} (default 10), \code{mtry.reduce}
+  (default equal to the number of variables), \code{ntree.pilot}
+  (default 50), \code{rank.by} (over-time summary for the pilot screen,
+  default \code{"q90"}), \code{lasso.family} (\code{"poisson"}, the
+  default, or \code{"cox"}), \code{lasso.ncut} (baseline pieces for the
+  poisson screen, default 10), \code{lasso.s} (penalty selected by
+  cross-validation, \code{"lambda.min"}, the default, or
+  \code{"lambda.1se"}), \code{nfolds} (default 10), \code{maxit}
+  (default 7500, passed to \code{glmnet}), \code{max.subjects}
+  (optional subject subsample size for the lasso screen),
+  \code{tolerance} (default \code{1e-50}), \code{seed}, and
+  \code{mtry.guided} (number of candidate variables per split in the
+  guided rule forest grown by \code{importance.rhf()}, default one third
+  of the retained variables).}
 
 }
 
@@ -237,6 +290,51 @@ individual variables are considered, and can be used, for example, to
 give additional weight to time-dependent covariates.
 
 
+\strong{Guided feature selection}
+
+In the presence of a large number of variables, a tree split can easily
+end up splitting on noise when \code{mtry} candidate split variables are
+selected randomly.  A guided forest helps mitigate this problem and
+replaces uniform selection with selection probabilities proportional to
+\code{xvar.wt}, so that candidate variables at each split are drawn
+toward the top ranked variables.  \code{xvar.wt.rhf()} computes these
+weights by the split weight regularization of VarPro (Lu and Ishwaran,
+2024).  Two screens are applied to the counting process records to
+obtain these weights.
+
+A lasso for the hazard defines the first screen.  The default likelihood
+is the piecewise exponential model, the Poisson approximation to the Cox
+model.  Records are split at \code{lasso.ncut} baseline cut points
+placed at quantiles of the event times, each piece contributes its event
+count with log exposure as offset, and the baseline pieces enter as
+unpenalized indicators.  The Cox partial likelihood on \code{Surv(start,
+stop, event)} is available through \code{lasso.family = "cox"};
+\code{glmnet} fits start-stop data through an R level iteration that
+runs an order of magnitude slower.  Subject level cross-validation folds
+select the penalty at \code{lambda.min}.  The one standard error rule
+used by VarPro is available through \code{lasso.s = "lambda.1se"}; for a
+screen it discards weak signals that the cap on \code{nvar} would
+otherwise retain.  The absolute standardized coefficients are the
+weights, and variables outside the lasso support receive zero.  The
+second screen uses a RHF of shallow trees; weights are set to the
+observed forest averaged splitting frquency of a variable.  Each
+screen's weights are scaled to a maximum of one and raised to a power
+that increases with the size of its support (2, 5, 10, or 20 for
+supports below 20, below 50, below 100, and at least 100).  These are
+summed, the top \code{nvar} variables are retained, and all other
+variables receive weight zero.  When no screen retains a variable,
+\code{xvar.wt.rhf()} issues a warning and returns uniform weights. Its
+attribute \code{status} is set to \code{"failed"} to indicate an
+unguided forest.
+
+Use \code{xvar.wt.rhf()} to obtain a guided forest from these weights,
+as in \code{rhf(f, d, xvar.wt = xvar.wt.rhf(f, d))}.  The
+function \code{\link{importance.rhf}} performs the same screening
+internally when called with \code{guided = TRUE}, and uses the rules of
+a guided forest directly when the supplied forest was grown with
+nonuniform \code{xvar.wt}.
+
+
 \strong{In-sample fitted trajectories}
 
 For the training data, RHF assembles case-specific fitted curves on
@@ -272,16 +370,23 @@ available when an explicit counting-process data frame is desired.
 
 \value{
 
-  An object of class \code{"rhf"} containing the fitted forest and related
-  results. Components include (among others) the working time grid
-  \code{time.interest} and case-specific ensemble estimates of the hazard
-  and cumulative hazard. When bootstrapping is used, these are typically
-  returned as \code{hazard.oob}/\code{chf.oob} (out-of-bag) and
-  \code{hazard.inbag}/\code{chf.inbag} (in-bag). The component
-  \code{input.info} records whether the forest was grown from ordinary
-  right-censored or counting-process input and retains the response names
-  needed for prediction. Use \code{\link{predict.rhf}} to obtain estimates
-  for new data.
+  \code{rhf()} returns an object of class \code{"rhf"} containing the
+  fitted forest and related results. Components include (among others)
+  the working time grid \code{time.interest} and case-specific ensemble
+  estimates of the hazard and cumulative hazard. When bootstrapping is
+  used, these are typically returned as \code{hazard.oob}/\code{chf.oob}
+  (out-of-bag) and \code{hazard.inbag}/\code{chf.inbag} (in-bag). The
+  component \code{input.info} records whether the forest was grown from
+  ordinary right-censored or counting-process input and retains the
+  response names needed for prediction. Use \code{\link{predict.rhf}}
+  to obtain estimates for new data.
+
+  \code{xvar.wt.rhf()} returns a named numeric vector of split weights
+  with one entry per predictor, in the order used by \code{rhf()}, for
+  the \code{xvar.wt} argument of \code{rhf()}. Variables outside the
+  retained set have weight zero. The attributes \code{selected} and
+  \code{raw} record the retained variables and the raw screening
+  components.
 
 }
 
@@ -292,10 +397,10 @@ available when an explicit counting-process data frame is desired.
 }
 
 \references{
-  
+
   Ishwaran H. and Kogalur U.B. (2007).  Random survival forests for R,
   \emph{Rnews}, 7(2):25-31.
-  
+
   Ishwaran H., Kogalur U.B., Blackstone E.H. and Lauer M.S.
   (2008).  Random survival forests, \emph{Ann. App.
     Statist.}, 2:841-860.
@@ -309,7 +414,10 @@ available when an explicit counting-process data frame is desired.
 
   Ishwaran H., Kogalur U.B., Hsich E.M. and Lee D.K. (2026).  Random
   hazard forests.
-  
+
+  Lu, M. and Ishwaran, H. (2024). Model-independent variable selection
+  via the rule-based variable priority. arXiv e-prints, pp.arXiv-2409.
+
 }
 
 \seealso{
@@ -324,7 +432,7 @@ available when an explicit counting-process data frame is desired.
 
 \examples{
 
-  
+
 ## ------------------------------------------------------------
 ##  time-static pbc: parameters set for fast CRAN run
 ## ------------------------------------------------------------
@@ -337,11 +445,16 @@ pbc.raw <- na.omit(pbc)
 f <- Surv(days, status) ~ .
 print((o <- rhf(f, pbc.raw, ntree = 3)))
 
-## smooth hazard estimator for specific cases
+## case-specific curves: the probability of an event in each grid
+## interval (the default), the cumulative hazard, the survival probability
 plot(o, idx=c(1,5,10))
-plot(o, idx=c(1,5,10), hazard.only=TRUE)
-plot(o, idx=c(1,5,10), hazard.only=TRUE, lwd=0)
-plot(o, idx=1:10, lwd=0, hazard.only=TRUE, legend.show=FALSE)
+plot(o, idx=c(1,5,10), type="chf")
+plot(o, idx=c(1,5,10), type="surv")
+
+## the smoothed hazard display
+plot(o, idx=c(1,5,10), type="hazard")
+plot(o, idx=c(1,5,10), type="hazard", lwd=0)
+plot(o, idx=1:10, type="hazard", lwd=0, legend.show=FALSE)
 
 \donttest{
 
@@ -377,7 +490,7 @@ cat("RSF C-index (from rsf object):",tail(o.rsf$err.rate, 1),"\n")
 ## graphical parameters
 oldpar <- par(mfrow=c(2,2))
 
-## plot survival results 
+## plot survival results
 matplot(time,t(S.rhf),type="l",col=gray(.6),ylab="RHF survival")
 matplot(time,t(S.rsf),type="l",col=gray(.6),ylab="RSF survival")
 boxplot(t(S.rhf-S.rsf),ylab="survival diff.",xlab="cases",xaxt="n",outline=FALSE,range=1e-10)
@@ -402,18 +515,23 @@ par(oldpar)
 ##  TDC illustration (using built in hazard simulation function)
 ## ------------------------------------------------------------
 
-d1 <- hazard.simulation(1)$dta
-d2 <- hazard.simulation(2)$dta
-d3 <- hazard.simulation(3)$dta
+sim1 <- hazard.simulation(1); d1 <- sim1$dta
+sim2 <- hazard.simulation(2); d2 <- sim2$dta
+sim3 <- hazard.simulation(3); d3 <- sim3$dta
 f <- "Surv(id, start, stop, event) ~ ."
 
 o1 <- rhf(f, d1)
 o2 <- rhf(f, d2)
 o3 <- rhf(f, d3)
 
-plot(o1,idx=4)
-plot(o2,idx=1:3)
-plot(o3,idx=2)
+## event probability per grid interval, with the true curves of the
+## simulation (dashed; faint beyond the case's follow-up)
+plot(o1, idx=4, truth=sim1)
+plot(o2, idx=1:3, truth=sim2)
+plot(o3, idx=2, truth=sim3)
+
+## the smoothed hazard display, with the true hazard
+plot(o2, idx=1:3, type="hazard", truth=sim2)
 
 
 ## ------------------------------------------------------------
@@ -431,7 +549,7 @@ o2 <- rhf(f, peakVO2, treesize=30)
 cstat.f <- function(o) {randomForestSRC::get.cindex(o$yvar[, 2],
   o$yvar[, 3],rowSums(o$chf.oob, na.rm =TRUE))}
 cat("C-stat treesize 10:", cstat.f(o1), "\n")
-cat("C-stat treesize 30:", cstat.f(o2), "\n") 
+cat("C-stat treesize 30:", cstat.f(o2), "\n")
 
 ## acquire auc-t
 a1.chf <- auct.rhf(o1) ## same as auct.rhf(o1, marker = "chf")
@@ -454,7 +572,7 @@ plot(a2.haz, main="treesize 15")
 par(oldpar)
 
 ## ------------------------------------------------------------
-##  more detailed example of time-varying performance 
+##  more detailed example of time-varying performance
 ## ------------------------------------------------------------
 
 d <- hazard.simulation(1)$dta
@@ -499,6 +617,22 @@ o.gfs <- rhf(f,d, xvar.wt = xvar.wt.rhf(f, d))
 
 print(o)
 print(o.gfs)
+
+## high dimension: add noise variables to the simulation
+d.noise <- data.frame(d, matrix(rnorm(nrow(d) * 200), nrow(d),
+                                dimnames = list(NULL, paste0("noise", 1:200))))
+
+## split weights: retained variables have positive weight
+w <- xvar.wt.rhf(f, d.noise)
+print(w[w > 0])
+print(attr(w, "selected"))
+
+## guided forest on the high-dimensional data
+o.hd <- rhf(f, d.noise)
+o.hd.gfs <- rhf(f, d.noise, xvar.wt = w)
+
+print(o.hd)
+print(o.hd.gfs)
 
 }
 }

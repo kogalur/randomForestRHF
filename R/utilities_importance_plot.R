@@ -144,7 +144,8 @@
 .rhf_select_dotmatrix_variables <- function(mat,
                                             vars = NULL,
                                             top.n.union = 15L,
-                                            sort.abs = TRUE) {
+                                            sort.abs = TRUE,
+                                            signed = FALSE) {
   if (!is.null(vars)) {
     vars <- intersect(as.character(vars), rownames(mat))
     if (!length(vars)) {
@@ -156,19 +157,23 @@
   if (!is.finite(top.n.union) || top.n.union < 1L) {
     stop("'top.n.union' must be a positive integer.")
   }
+  ## A cell is drawn only when its value is positive, or nonzero for a
+  ## signed display.  The per-window ranking counts only such cells, so
+  ## a window with few rules does not admit variables that have nothing
+  ## to show, and the union never contains an empty row.
+  drawable <- is.finite(mat) & (if (isTRUE(signed)) mat != 0 else mat > 0)
   top.vars <- unique(unlist(lapply(seq_len(ncol(mat)), function(j) {
     v <- mat[, j]
     score <- if (isTRUE(sort.abs)) abs(v) else v
-    keep <- is.finite(score)
-    if (!any(keep)) {
+    idx <- which(drawable[, j])
+    if (!length(idx)) {
       return(character(0))
     }
-    idx <- which(keep)
     ord <- idx[order(score[idx], decreasing = TRUE)]
     rownames(mat)[head(ord, min(top.n.union, length(ord)))]
   }), use.names = FALSE))
   if (!length(top.vars)) {
-    stop("No finite variables available for the matrix plot.")
+    stop("No variables with a positive importance value are available for the matrix plot.")
   }
   mat[top.vars, , drop = FALSE]
 }

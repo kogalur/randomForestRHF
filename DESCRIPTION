@@ -1,6 +1,6 @@
 Package: randomForestRHF
-Version: 2.1.0
-Date: 2026-09-17
+Version: 2.1.2
+Date: 2026-10-27
 Title: Random Hazard Forests
 Authors@R: c(person("Hemant", "Ishwaran", email = "hemant.ishwaran@gmail.com", role = "aut"),
   person("Udaya B.", "Kogalur", email = "ubk@kogalur.com", role = c("aut", "cre")))

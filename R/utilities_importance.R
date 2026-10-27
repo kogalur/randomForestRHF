@@ -1,96 +1,3 @@
-xvar.wt.rhf <- function(
-    f,
-    d,
-    scale = 4,
-    rank.by = c("q90", "median", "mean", "max", "sum"),
-    rhf.args = list(),
-    cache.args = list()) {
-  rank.by <- match.arg(rank.by)
-  ## Require named argument lists so do.call() cannot accidentally
-  ## match unnamed values positionally.
-  check.args <- function(x, arg, reserved = character()) {
-    if (!is.list(x)) {
-      stop(sprintf("'%s' must be a list.", arg), call. = FALSE)
-    }
-    if (!length(x)) {
-      return(x)
-    }
-    nm <- names(x)
-    if (is.null(nm) || anyNA(nm) || any(!nzchar(nm))) {
-      stop(
-        sprintf("All elements of '%s' must be named.", arg),
-        call. = FALSE
-      )
-    }
-    if (anyDuplicated(nm)) {
-      stop(
-        sprintf("'%s' contains duplicated argument names.", arg),
-        call. = FALSE
-      )
-    }
-    bad <- intersect(nm, reserved)
-    if (length(bad)) {
-      stop(
-        sprintf(
-          "'%s' cannot contain: %s.",
-          arg,
-          paste(bad, collapse = ", ")
-        ),
-        call. = FALSE
-      )
-    }
-    x
-  }
-  rhf.args <- check.args(
-    rhf.args,
-    arg = "rhf.args",
-    reserved = c("formula", "data")
-  )
-  cache.args <- check.args(
-    cache.args,
-    arg = "cache.args",
-    reserved = "o"
-  )
-  ## Pilot defaults. User-supplied arguments override these by name.
-  pilot.args <- list(ntree = 50)
-  if (length(rhf.args)) {
-    pilot.args[names(rhf.args)] <- rhf.args
-  }
-  ## Fit the pilot RHF
-  o <- do.call(
-    rhf,
-    c(
-      list(formula = f, data = d),
-      pilot.args
-    )
-  )
-  ## Build the time-localized VarPro cache
-  cache <- do.call(
-    varpro.cache.rhf,
-    c(
-      list(o = o),
-      cache.args
-    )
-  )
-  ## Compute importance using the prebuilt cache
-  imp.matx <- importance.rhf(
-    o,
-    cache = cache
-  )$importance.matrix
-  imp <- .rhf_row_summary(
-    imp.matx,
-    rank.by = rank.by
-  )
-  ## Assemble weights in the original RHF predictor order
-  xvar.names <- o$xvar.names
-  weights <- setNames(
-    numeric(length(xvar.names)),
-    xvar.names
-  )
-  matched <- intersect(names(imp), xvar.names)
-  weights[matched] <- imp[matched] ^ scale
-  weights
-}
 ########################################################################
 ## small internal helpers
 ########################################################################
@@ -213,11 +120,24 @@ xvar.wt.rhf <- function(
   if (length(ss$start) != cache$n.pseudo) {
     stop("The supplied cache does not match the RHF object: pseudo-individual count differs.")
   }
-  if (length(o$xvar.names) != length(cache$xvar.names) ||
-      any(as.character(o$xvar.names) != as.character(cache$xvar.names))) {
-    stop("The supplied cache does not match the RHF object: xvar.names differ.")
+  ## A guided cache holds rules from the internal guided rule forest,
+  ## whose predictors are the retained subset of o$xvar.names.
+  if (isTRUE(cache$guided)) {
+    if (!all(as.character(cache$xvar.names) %in% as.character(o$xvar.names))) {
+      stop("The supplied guided cache does not match the RHF object: xvar.names differ.")
+    }
   }
-  if (length(grid) != length(cache$grid) || any(grid != cache$grid)) {
+  else {
+    if (length(o$xvar.names) != length(cache$xvar.names) ||
+        any(as.character(o$xvar.names) != as.character(cache$xvar.names))) {
+      stop("The supplied cache does not match the RHF object: xvar.names differ.")
+    }
+  }
+  ## the guided rule forest receives o$time.interest as user-supplied time
+  ## points and returns them through the internal time map, so compare the
+  ## grids with a tolerance rather than exactly
+  if (length(grid) != length(cache$grid) ||
+      !isTRUE(all.equal(as.numeric(grid), as.numeric(cache$grid), tolerance = 1e-8))) {
     stop("The supplied cache does not match the RHF object: time.interest differs.")
   }
   invisible(TRUE)

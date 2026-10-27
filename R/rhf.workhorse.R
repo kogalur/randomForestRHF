@@ -442,7 +442,7 @@ rhf.workhorse <- function(formula,
                       terminal.quants = TRUE,
                       ## add x,y values here as needed
                       xvar.time = xvar.time,
-                      version = "2.1.0")
+                      version = "2.1.2")
   empr.risk <- NULL
   oob.empr.risk <- NULL
   nodeStat <- NULL

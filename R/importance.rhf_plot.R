@@ -57,7 +57,8 @@ dotmatrix.importance.rhf <- function(x,
   mat <- .rhf_select_dotmatrix_variables(mat = mat,
                                          vars = vars,
                                          top.n.union = top.n.union,
-                                         sort.abs = sort.abs)
+                                         sort.abs = sort.abs,
+                                         signed = (color.by == "sign"))
   var.order <- .rhf_order_dotmatrix_variables(mat = mat,
                                               variable.labels = variable.labels,
                                               sort.by = sort.by,
@@ -439,7 +440,8 @@ barplot.importance.rhf <- function(x,
   mat <- .rhf_select_dotmatrix_variables(mat = mat,
                                          vars = vars,
                                          top.n.union = top.n.union,
-                                         sort.abs = sort.abs)
+                                         sort.abs = sort.abs,
+                                         signed = (color.by == "sign"))
   var.order <- .rhf_order_dotmatrix_variables(mat = mat,
                                               variable.labels = variable.labels,
                                               sort.by = sort.by,
@@ -803,7 +805,7 @@ plot.importance.rhf <- function(x,
   dots <- list(...)
   type <- match.arg(type)
   .rhf_validate_named_list(legend.args, "legend.args")
-  if (type == "dotmatrix") {
+  if (type %in% c("dotmatrix", "barplot")) {
     if (is.null(xlab)) {
       xlab <- ""
     }
@@ -819,25 +821,17 @@ plot.importance.rhf <- function(x,
                    xlab = xlab,
                    ylab = ylab),
               dots)
-    return(do.call(dotmatrix.importance.rhf, args))
-  }
-  if (type == "barplot") {
-    if (is.null(xlab)) {
-      xlab <- ""
+    ## A supplied 'top' sets the per-window count whose union defines the
+    ## rows of a matrix plot, unless 'top.n.union' is given explicitly.
+    if (!missing(top) && is.null(dots$top.n.union)) {
+      top <- as.integer(top)[1L]
+      if (!is.finite(top) || top < 1L) {
+        stop("'top' must be a positive integer.")
+      }
+      args$top.n.union <- top
     }
-    if (is.null(ylab)) {
-      ylab <- ""
-    }
-    args <- c(list(x = x,
-                   vars = vars,
-                   variable.labels = variable.labels,
-                   legend = legend,
-                   legend.args = legend.args,
-                   display.note = display.note,
-                   xlab = xlab,
-                   ylab = ylab),
-              dots)
-    return(do.call(barplot.importance.rhf, args))
+    helper <- if (type == "dotmatrix") dotmatrix.importance.rhf else barplot.importance.rhf
+    return(do.call(helper, args))
   }
   rank.by <- match.arg(rank.by)
   curve <- match.arg(curve)

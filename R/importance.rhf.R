@@ -1,4 +1,147 @@
 ########################################################################
+## guided rule forest
+########################################################################
+.rhf_is_guided <- function(o) {
+  w <- o$forest$parms$xvar.wt
+  if (is.null(w) || length(w) < 2L) {
+    return(FALSE)
+  }
+  any(w == 0) || length(unique(as.numeric(w))) > 1L
+}
+## Grow the internal rule forest used by the guided analysis.  The forest
+## is grown on the retained variables only, with the split weights as
+## xvar.wt, on the same records, the same time grid, and the same tree
+## settings as the user's forest.  Only ntree differs: the rule forest
+## needs max.tree trees because rule extraction uses at most max.tree
+## trees.
+.rhf_guided_rule_forest <- function(o,
+                                    xvar.wt = NULL,
+                                    ntree,
+                                    guided.args = list(),
+                                    verbose = FALSE) {
+  if (is.null(o$id) || is.null(o$yvar) || is.null(o$xvar)) {
+    stop("The guided analysis requires an RHF object that stores id, yvar, and xvar.")
+  }
+  t.start <- proc.time()[3L]
+  data <- .rhf.build_data_from_object(o)
+  xvar.names <- o$xvar.names
+  p <- length(xvar.names)
+  ## split weights
+  raw <- NULL
+  if (!is.list(guided.args)) {
+    stop("'guided.args' must be a named list.")
+  }
+  guided.args$verbose <- NULL
+  if (is.null(xvar.wt)) {
+    if (isTRUE(verbose)) {
+      message("[varpro.cache.rhf] computing split weights for guided rule generation")
+    }
+    ## mtry.guided belongs to the rule forest, not to the screening engine
+    engine.args <- guided.args
+    engine.args$mtry.guided <- NULL
+    args <- c(
+      list(x = data[, xvar.names, drop = FALSE],
+           start = data$start,
+           stopv = data$stop,
+           event = data$event,
+           id = data$id,
+           verbose = verbose),
+      engine.args
+    )
+    xvar.wt <- do.call(.rhf_split_weight, args)
+    raw <- attr(xvar.wt, "raw")
+    ## No screen retained a variable.  Uniform weights would reproduce an
+    ## unguided forest, so the rules of o are used as they are and the
+    ## result is reported as unguided.
+    if (identical(attr(xvar.wt, "status"), "failed")) {
+      if (isTRUE(verbose)) {
+        message("[varpro.cache.rhf] screening retained no variable; using the rules of the supplied forest")
+      }
+      return(list(
+        forest = o,
+        split.weight = NULL,
+        split.weight.raw = raw,
+        xvar.selected = character(0),
+        xvar.names.all = xvar.names,
+        status = "screening failed"
+      ))
+    }
+  }
+  w <- .rhf_align_weights(xvar.wt, xvar.names)
+  keep <- w > 0
+  if (!any(keep)) {
+    stop("All split weights are zero; no variables available for rule generation.")
+  }
+  p.keep <- sum(keep)
+  ## mtry for the guided rule forest.  varPro grows its rule forest with
+  ## the regression default of one third of the retained variables, so
+  ## the leading variables are candidates at every node and the split
+  ## rule, not the weights alone, decides the split.  RHF's square root
+  ## default would offer too few candidates on a retained set of 30.
+  mtry.guided <- guided.args$mtry.guided
+  if (is.null(mtry.guided)) {
+    mtry.guided <- max(1L, ceiling(p.keep / 3))
+  }
+  mtry.guided <- max(1L, min(as.integer(mtry.guided)[1L], p.keep))
+  ## refit on the retained variables with the original tree settings
+  parms <- o$forest$parms
+  if (is.null(parms)) {
+    stop("The RHF object does not store forest parameters; cannot grow the guided rule forest.")
+  }
+  refit.data <- data.frame(
+    id = data$id,
+    start = data$start,
+    stop = data$stop,
+    event = data$event,
+    data[, xvar.names[keep], drop = FALSE],
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  args <- list(
+    formula = stats::as.formula("Surv(id, start, stop, event) ~ ."),
+    data = refit.data,
+    ntree = ntree,
+    xvar.wt = unname(w[keep]),
+    mtry = mtry.guided,
+    membership = TRUE,
+    ntime = o$time.interest
+  )
+  copy <- c("nodesize", "nsplit", "bootstrap", "samptype", "sampsize",
+            "case.wt", "samp", "splitrule", "experimental.bits",
+            "adaptive", "event.process", "min.events.per.gap", "block.size")
+  for (nm in intersect(names(parms), copy)) {
+    if (!is.null(parms[[nm]])) {
+      args[[nm]] <- parms[[nm]]
+    }
+  }
+  if (!is.null(o$forest$lot$treesize)) {
+    args$treesize <- o$forest$lot$treesize
+  }
+  if (!is.null(guided.args$seed)) {
+    args$seed <- guided.args$seed
+  }
+  hazard.config <- if (!is.null(o$hazard.config)) o$hazard.config else parms$hazard.config
+  hazard.options <- get.hazard.options(dots = list(), hazard.config = hazard.config)
+  args[names(hazard.options)] <- hazard.options
+  if (isTRUE(verbose)) {
+    message("[varpro.cache.rhf] growing guided rule forest: ",
+            p.keep, " of ", p, " variables, ", ntree, " trees, mtry ", mtry.guided)
+  }
+  forest <- do.call(rhf, args)
+  if (isTRUE(verbose)) {
+    message("[varpro.cache.rhf] guided rule forest ready, elapsed ",
+            .rhf_format_elapsed(proc.time()[3L] - t.start))
+  }
+  list(
+    forest = forest,
+    split.weight = w,
+    split.weight.raw = raw,
+    xvar.selected = xvar.names[keep],
+    xvar.names.all = xvar.names,
+    status = "guided"
+  )
+}
+########################################################################
 ## cache builder
 ########################################################################
 varpro.cache.rhf <- function(o,
@@ -6,11 +149,46 @@ varpro.cache.rhf <- function(o,
                              max.tree = 150L,
                              y.external = NULL,
                              eps = 1e-6,
+                             guided = FALSE,
+                             xvar.wt = NULL,
+                             guided.args = list(),
                              verbose = FALSE) {
   if (!inherits(o, "rhf")) {
     stop("This function only works for objects inheriting from class 'rhf'.")
   }
   t.start <- proc.time()[3L]
+  ## guided rule generation: use the object when it is already guided,
+  ## otherwise grow an internal guided rule forest
+  guided.info <- NULL
+  if (isTRUE(guided) || !is.null(xvar.wt)) {
+    if (is.null(xvar.wt) && .rhf_is_guided(o)) {
+      if (isTRUE(verbose)) {
+        message("[varpro.cache.rhf] RHF object is already guided; using its rules")
+      }
+      w <- stats::setNames(as.numeric(o$forest$parms$xvar.wt), o$xvar.names)
+      guided.info <- list(
+        split.weight = w,
+        split.weight.raw = NULL,
+        xvar.selected = o$xvar.names[w > 0],
+        xvar.names.all = o$xvar.names,
+        refit = FALSE,
+        status = "already guided"
+      )
+    }
+    else {
+      g <- .rhf_guided_rule_forest(o,
+                                   xvar.wt = xvar.wt,
+                                   ntree = max.tree,
+                                   guided.args = guided.args,
+                                   verbose = verbose)
+      o <- g$forest
+      guided.info <- g[c("split.weight", "split.weight.raw",
+                         "xvar.selected", "xvar.names.all", "status")]
+      guided.info$refit <- identical(g$status, "guided")
+    }
+  }
+  ## guided is TRUE only when the rules come from a guided forest
+  guided.used <- !is.null(guided.info) && guided.info$status != "screening failed"
   if (isTRUE(verbose)) {
     message("[varpro.cache.rhf] building rule-membership cache")
   }
@@ -95,7 +273,10 @@ varpro.cache.rhf <- function(o,
     n.risk.window = plan$n.risk,
     max.rules.tree = max.rules.tree,
     max.tree = max.tree,
-    n.pseudo = n.pseudo
+    n.pseudo = n.pseudo,
+    guided = guided.used,
+    guided.status = if (is.null(guided.info)) "unguided" else guided.info$status,
+    guided.info = guided.info
   )
   class(out) <- "varpro.cache.rhf"
   if (isTRUE(verbose)) {
@@ -103,6 +284,12 @@ varpro.cache.rhf <- function(o,
             nrow(results.base), " usable rules, ",
             n.pseudo, " pseudo-individuals",
             if (!is.null(y.source) && nzchar(y.source)) paste0(", y.source=", y.source) else "",
+            if (guided.used) {
+              paste0(", guided (", length(guided.info$xvar.selected), " of ",
+                     length(guided.info$xvar.names.all), " variables)")
+            } else if (!is.null(guided.info)) {
+              paste0(", ", guided.info$status, ", rules unguided")
+            } else "",
             ", elapsed ",
             .rhf_format_elapsed(proc.time()[3L] - t.start))
   }
@@ -184,6 +371,9 @@ importance.rhf <- function(o,
                            max.tree,
                            eps = 1e-6,
                            y.external = NULL,
+                           guided = FALSE,
+                           xvar.wt = NULL,
+                           guided.args = list(),
                            verbose = FALSE,
                            ...) {
   if (!inherits(o, "rhf")) {
@@ -193,6 +383,9 @@ importance.rhf <- function(o,
     cache.args <- list(o = o,
                        eps = eps,
                        y.external = y.external,
+                       guided = guided,
+                       xvar.wt = xvar.wt,
+                       guided.args = guided.args,
                        verbose = verbose)
     if (!missing(max.rules.tree)) {
       cache.args$max.rules.tree <- max.rules.tree
@@ -208,7 +401,8 @@ importance.rhf <- function(o,
       message("[importance.rhf] using supplied cache",
               if (!is.null(cache$y.source) && nzchar(cache$y.source)) {
                 paste0(" (y.source=", cache$y.source, ")")
-              } else "")
+              } else "",
+              if (isTRUE(cache$guided)) " (guided)" else "")
     }
   }
   if (is.null(time.index)) {
@@ -290,7 +484,13 @@ importance.rhf <- function(o,
     ),
     window.info = window.info,
     y.source = cache$y.source,
-    trim = trim
+    trim = trim,
+    guided = isTRUE(cache$guided),
+    guided.status = if (is.null(cache$guided.status)) "unguided" else cache$guided.status,
+    split.weight = if (isTRUE(cache$guided)) cache$guided.info$split.weight else NULL,
+    split.weight.raw = if (!is.null(cache$guided.info)) cache$guided.info$split.weight.raw else NULL,
+    xvar.selected = if (isTRUE(cache$guided)) cache$guided.info$xvar.selected else NULL,
+    xvar.names.all = if (!is.null(cache$guided.info)) cache$guided.info$xvar.names.all else cache$xvar.names
   )
   class(out) <- "importance.rhf"
   out

@@ -19,6 +19,24 @@ print.importance.rhf <- function(x,
     paste0("  variables: ", nrow(x$importance.matrix)),
     paste0("  ranking:   ", rank.by)
   )
+  if (isTRUE(x$guided)) {
+    header <- c(header,
+                paste0("  guided:    ", length(x$xvar.selected), " of ",
+                       length(x$xvar.names.all),
+                       " variables retained for rule generation"))
+  }
+  else if (identical(x$guided.status, "screening failed")) {
+    header <- c(header,
+                "  guided:    requested, but no screen retained a variable; rules are unguided")
+  }
+  else {
+    ## unguided: with many variables the guided importance is much sparser
+    p.all <- if (length(x$xvar.names.all)) length(x$xvar.names.all) else nrow(x$importance.matrix)
+    if (isTRUE(p.all >= 50L)) {
+      header <- c(header,
+                  paste0("  note:      ", p.all, " variables; guided = TRUE gives a sparser importance (see ?importance.rhf)"))
+    }
+  }
   if (!is.null(x$y.source) && nzchar(x$y.source)) {
     header <- c(header, paste0("  y.source:  ", x$y.source))
   }

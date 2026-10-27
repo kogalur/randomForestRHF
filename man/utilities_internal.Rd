@@ -2,13 +2,12 @@
 \alias{convert.counting}
 \alias{convert.standard.counting}
 \alias{hazard.simulation}
-\alias{xvar.wt.rhf}
 
 \title{Advanced Utility Functions for RHF Workflows}
 
 \description{
 These helper functions support advanced random-hazard-forest workflows,
-including data conversion, simulation, and predictor weighting.
+including data conversion and simulation.
 }
 
 \usage{
@@ -31,23 +30,16 @@ hazard.simulation(type = 1,
   n = 500, p = 10, nrecords = 7,
   scale = FALSE, ngrid = 1e5, ...)
 
-xvar.wt.rhf(f, 
-    d,
-    scale = 4,
-    rank.by = c("q90", "median", "mean", "max", "sum"),
-    rhf.args = list(),
-    cache.args = list())
-
 }
 
 \arguments{
   \item{f, formula}{A survival formula. \code{convert.counting()} expects a
-  standard survival formula such as \code{Surv(time, event) ~ .}. 
+  standard survival formula such as \code{Surv(time, event) ~ .}.
   \code{convert.standard.counting()} expects counting-process style input such
   as \code{Surv(id, start, stop, event) ~ .} or
   \code{Surv(start, stop, event) ~ .}.}
 
-  \item{dta, data, d}{Input data frame.}
+  \item{dta, data}{Input data frame.}
 
   \item{scale}{Logical or numeric time-scaling control, depending on the
   helper being used.}
@@ -102,9 +94,6 @@ a conventional survival-analysis data frame or to a predictor-only frame.
 
 \code{hazard.simulation()} generates synthetic counting-process data together
 with the corresponding theoretical hazard function.
-
-\code{xvar.wt.rhf()} computes variable weights that can be supplied to
-\code{rhf(..., xvar.wt = ...)}.
 }
 
 \value{
@@ -121,10 +110,20 @@ The returned value depends on the helper:
   frame when no valid rows remain after filtering.
   \item \code{hazard.simulation()}: a list with components \code{dta}
   (simulated counting-process data frame), \code{haz}
-  (a function that evaluates the true hazard on a supplied time grid), and
-  \code{scale} (the time-scaling factor used in the simulation).
-  \item \code{xvar.wt.rhf()}: a named numeric vector of predictor weights for
-  the \code{xvar.wt} argument of \code{rhf()}.
+  (a function that evaluates the true hazard on a supplied time grid),
+  \code{scale} (the time-scaling factor used in the simulation) and, for
+  types 2 and 3, \code{chf} (the true cumulative hazard), \code{hazchf}
+  and \code{truth} (the latent parameters of the time-varying covariate
+  paths).  \code{haz(time, x, xtd = NULL)} and \code{chf(time, x, xtd =
+  NULL)} take a data frame \code{x} with one row per subject (the
+  \code{id} and the \code{x.*} columns of \code{dta}; the ids of the
+  simulation) and return a matrix, subjects by times.  The optional
+  \code{xtd} (for type 3, \code{xtd1} and \code{xtd2}) is an intervention
+  on the time-varying covariate: it is held at that value for all
+  \code{time} (one value, or one per subject), so the model is evaluated in
+  terms of the observed variables with the time-varying one fixed, as a
+  partial dependence calculation needs; by default the subject's own path
+  is used.
 }
 }
 

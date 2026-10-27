@@ -42,8 +42,10 @@ void stackTNQualitativeObjects(char     mode,
                                                 SG_sexpStringOutgoing,
                                                 pSG_rmbrTNodeCT_ptr,
                                                 2,
-                                                RF_ntree,
-                                                -2);
+                                                (const AuxiliaryDimension[]) {
+                                                  [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                  [2] = {RF_AUX_DIM_LEAF_COUNT, 0}
+                                                });
     *pSG_imbrTNodeCT_ = (uint*) stackAndProtect(RF_auxDimConsts,
                                                 mode,
                                                 &RF_nativeIndex,
@@ -54,8 +56,10 @@ void stackTNQualitativeObjects(char     mode,
                                                 SG_sexpStringOutgoing,
                                                 pSG_imbrTNodeCT_ptr,
                                                 2,
-                                                RF_ntree,
-                                                -2);
+                                                (const AuxiliaryDimension[]) {
+                                                  [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                  [2] = {RF_AUX_DIM_LEAF_COUNT, 0}
+                                                });
     *pSG_ombrTNodeCT_ = (uint*) stackAndProtect(RF_auxDimConsts,
                                                 mode,
                                                 &RF_nativeIndex,
@@ -66,8 +70,10 @@ void stackTNQualitativeObjects(char     mode,
                                                 SG_sexpStringOutgoing,
                                                 pSG_ombrTNodeCT_ptr,
                                                 2,
-                                                RF_ntree,
-                                                -2);
+                                                (const AuxiliaryDimension[]) {
+                                                  [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                  [2] = {RF_AUX_DIM_LEAF_COUNT, 0}
+                                                });
     localSize = 0;
     for (treeID = 1; treeID <= RF_ntree; treeID++) {
       localSize += SG_bootstrapSizeCase[treeID];
@@ -82,7 +88,7 @@ void stackTNQualitativeObjects(char     mode,
                                                 SG_sexpStringOutgoing,
                                                 NULL,
                                                 1,
-                                                localSize);
+                                                (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
     (*pSG_rmbrTNodeID_) --;
     localSize = 0;
     for (treeID = 1; treeID <= RF_ntree; treeID++) {
@@ -98,7 +104,7 @@ void stackTNQualitativeObjects(char     mode,
                                                 SG_sexpStringOutgoing,
                                                 NULL,
                                                 1,
-                                                localSize);
+                                                (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
     (*pSG_imbrTNodeID_) --;
     localSize = 0;
     for (treeID = 1; treeID <= RF_ntree; treeID++) {
@@ -115,7 +121,7 @@ void stackTNQualitativeObjects(char     mode,
                                                   SG_sexpStringOutgoing,
                                                   NULL,
                                                   1,
-                                                  localSize);
+                                                  (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
       (*pSG_ombrTNodeID_) --;
     }
     else {
@@ -133,7 +139,7 @@ void stackTNQualitativeObjects(char     mode,
                                                   SG_sexpStringOutgoing,
                                                   NULL,
                                                   1,
-                                                  localSize);
+                                                  (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
       (*pSG_ombrTNodeID_) --;
     }
     localSize = RF_ntree;
@@ -147,7 +153,7 @@ void stackTNQualitativeObjects(char     mode,
                                         SG_sexpStringOutgoing,
                                         NULL,
                                         1,
-                                        localSize);
+                                        (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
     (*pOOB_SZ_) --;
     *pIBG_SZ_ = (uint*) stackAndProtect(RF_auxDimConsts,
                                         mode,
@@ -159,7 +165,7 @@ void stackTNQualitativeObjects(char     mode,
                                         SG_sexpStringOutgoing,
                                         NULL,
                                         1,
-                                        localSize);
+                                        (const AuxiliaryDimension[]) {[1] = {RF_AUX_DIM_FIXED, localSize}});
     (*pIBG_SZ_) --;
   }
 }
@@ -196,7 +202,7 @@ void stackTNQualitativeObjectsForestPtr(char mode,
     if ((offsetID_rmbr) != localSize) {
       RF_nativeError("\nRF-SRC:  *** ERROR *** ");
       RF_nativeError("\nRF-SRC:  Inconsistent total rmbr count during aux qualitative pointering:  ") ;
-      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10d, %10d", offsetID_rmbr, localSize);
+      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10llu, %10llu", (unsigned long long) offsetID_rmbr, (unsigned long long) localSize);
       RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
       RF_nativeExit();
     }
@@ -217,7 +223,7 @@ void stackTNQualitativeObjectsForestPtr(char mode,
     if ((offsetID_imbr) != localSize) {
       RF_nativeError("\nRF-SRC:  *** ERROR *** ");
       RF_nativeError("\nRF-SRC:  Inconsistent total imbr count during aux qualitative pointering:  ") ;
-      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10d, %10d", offsetID_imbr, localSize);
+      RF_nativeError("\nRF-SRC:  Offset versus total was:  %10llu, %10llu", (unsigned long long) offsetID_imbr, (unsigned long long) localSize);
       RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
       RF_nativeExit();
     }
@@ -239,7 +245,7 @@ void stackTNQualitativeObjectsForestPtr(char mode,
       if ((offsetID_ombr) != localSize) {
         RF_nativeError("\nRF-SRC:  *** ERROR *** ");
         RF_nativeError("\nRF-SRC:  Inconsistent total ombr count during aux qualitative pointering:  ");
-        RF_nativeError("\nRF-SRC:  Offset versus total was:  %10d, %10d", offsetID_ombr, localSize);
+        RF_nativeError("\nRF-SRC:  Offset versus total was:  %10llu, %10llu", (unsigned long long) offsetID_ombr, (unsigned long long) localSize);
         RF_nativeError("\nRF-SRC:  Please Contact Technical Support.");
         RF_nativeExit();
       }
@@ -362,9 +368,11 @@ void stackTNQuantitativeObjects(char mode,
                                                       SG_sexpStringOutgoing,
                                                       pSG_termNelsonAalen_ptr,
                                                       3,
-                                                      RF_ntree,
-                                                      -2,
-                                                      RF_sortedTimeInterestSize);
+                                                      (const AuxiliaryDimension[]) {
+                                                        [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                        [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                                        [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                                      });
     *pSG_termHazard_ = (double*) stackAndProtect(RF_auxDimConsts,
                                                  mode,
                                                  &RF_nativeIndex,
@@ -375,9 +383,11 @@ void stackTNQuantitativeObjects(char mode,
                                                  SG_sexpStringOutgoing,
                                                  pSG_termHazard_ptr,
                                                  3,
-                                                 RF_ntree,
-                                                 -2,
-                                                 RF_sortedTimeInterestSize);
+                                                 (const AuxiliaryDimension[]) {
+                                                   [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                   [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                                   [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                                 });
   }
 }
 void writeTNQuantitativeObjectsOutput(char mode,
@@ -424,9 +434,11 @@ void stackTNNodeTimeObjects(char mode,
                                             SG_sexpStringOutgoing,
                                             pSG_nodeU_ptr,
                                             3,
-                                            RF_ntree,
-                                            -2,
-                                            RF_sortedTimeInterestSize);
+                                            (const AuxiliaryDimension[]) {
+                                              [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                              [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                              [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                            });
     *pSG_nodeV_ = (double*) stackAndProtect(RF_auxDimConsts,
                                             mode,
                                             &RF_nativeIndex,
@@ -437,9 +449,11 @@ void stackTNNodeTimeObjects(char mode,
                                             SG_sexpStringOutgoing,
                                             pSG_nodeV_ptr,
                                             3,
-                                            RF_ntree,
-                                            -2,
-                                            RF_sortedTimeInterestSize);
+                                            (const AuxiliaryDimension[]) {
+                                              [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                              [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                              [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                            });
     *pSG_nodeCOE_ = (double*) stackAndProtect(RF_auxDimConsts,
                                               mode,
                                               &RF_nativeIndex,
@@ -450,9 +464,11 @@ void stackTNNodeTimeObjects(char mode,
                                               SG_sexpStringOutgoing,
                                               pSG_nodeCOE_ptr,
                                               3,
-                                              RF_ntree,
-                                              -2,
-                                              RF_sortedTimeInterestSize);
+                                              (const AuxiliaryDimension[]) {
+                                                [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                                [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                              });
     *pSG_nodeCumulativeCOE_ = (double*) stackAndProtect(RF_auxDimConsts,
                                                       mode,
                                                       &RF_nativeIndex,
@@ -463,9 +479,11 @@ void stackTNNodeTimeObjects(char mode,
                                                       SG_sexpStringOutgoing,
                                                       pSG_nodeCumulativeCOE_ptr,
                                                       3,
-                                                      RF_ntree,
-                                                      -2,
-                                                      RF_sortedTimeInterestSize);
+                                                      (const AuxiliaryDimension[]) {
+                                                        [1] = {RF_AUX_DIM_FIXED, RF_ntree},
+                                                        [2] = {RF_AUX_DIM_LEAF_COUNT, 0},
+                                                        [3] = {RF_AUX_DIM_FIXED, RF_sortedTimeInterestSize}
+                                                      });
   }
 }
 void writeTNNodeTimeObjects(char mode,
