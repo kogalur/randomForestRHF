@@ -114,11 +114,16 @@ print.rhf <- function(x, digits = 3, label.width = 34, ...) {
            .fmt("Average tree size (leaves)", fnum(avg_tree_size)),
            .fmt("Average node size",          fnum(nodeSZ)))
   if (!is.null(x$forest$parms) && !is.null(x$forest$parms$mtry)) {
-    out <- c(out, .fmt("No. features tried at each split", fint(x$forest$parms$mtry)))
+    out <- c(out, .fmt("Candidate features per split", fint(x$forest$parms$mtry)))
   }
   out <- c(out, .fmt("Total no. time-varying features", if (!is.na(n_tdc)) fint(n_tdc) else "NA"))
   if (!is.null(x$forest$parms) && !is.null(x$forest$parms$xvar.wt)) {
-    out <- c(out, .fmt("Total no. features", fint(length(x$forest$parms$xvar.wt))))
+    split_wt <- x$forest$parms$xvar.wt
+    out <- c(out, .fmt("Total no. features", fint(length(split_wt))))
+    n_eligible <- sum(split_wt > 0)
+    if (isTRUE(n_eligible > 0 && n_eligible < length(split_wt))) {
+      out <- c(out, .fmt("Features eligible for splitting", fint(n_eligible)))
+    }
   }
   if (!is.null(x$family))    out <- c(out, .fmt("Family",    as.character(x$family)))
   if (!is.null(x$splitrule)) {

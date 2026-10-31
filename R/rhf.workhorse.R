@@ -90,6 +90,10 @@ rhf.workhorse <- function(formula,
   xvar.nlevels <- xfactor$nlevels
   xfactor$numeric.levels <- xvar.numeric.levels <- get.numeric.levels(family, xfactor$nlevels, xvar)
   xvar.wt  <- get.weight(xvar.wt, n.xvar)
+  n.xvar.split <- sum(xvar.wt > 0)
+  if (n.xvar.split == 0L) {
+    stop("At least one variable must have a positive split weight.")
+  }
   ## determine which x-variables are time-dependent
   ## determine which individuals have any time-varying information
   xvar.time <- get.tdc.cov(data, subj.names, yvar.names)
@@ -97,7 +101,8 @@ rhf.workhorse <- function(formula,
   ## don't need the data anymore
   remove(data)
   ## tree grow options
-  mtry <- get.mtry(family, n.xvar, dots$mtry)
+  ## Base the default and upper limit on variables eligible for splitting.
+  mtry <- get.mtry(family, n.xvar.split, dots$mtry)
   nodesize <- get.nodesize(nodesize, any(xvar.time > 0))
   splitinfo <- get.splitinfo(formula.detail, dots$splitrule, nsplit)
   ## hard coded options 
@@ -442,7 +447,7 @@ rhf.workhorse <- function(formula,
                       terminal.quants = TRUE,
                       ## add x,y values here as needed
                       xvar.time = xvar.time,
-                      version = "2.1.2")
+                      version = "2.1.3")
   empr.risk <- NULL
   oob.empr.risk <- NULL
   nodeStat <- NULL

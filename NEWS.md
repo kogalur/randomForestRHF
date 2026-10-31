@@ -1,4 +1,4 @@
-# randomForestRHF 2.1.2
+# randomForestRHF 2.1.3
 
 * Added `coe.aggregate = "max.robust"` as the default COE ensemble aggregation for new fits, with additional protection against repeated maximum tree contributions. The correction can also apply at `coe.trim = 0`; `trimmed.mean`, `median`, and `mean` remain available.
 * Extended OOB trim selection and fitted hazard configuration to `max.robust`. Prediction reuses the fitted aggregation policy and selected trim, while restore recomputes the trim selection from OOB risk.
